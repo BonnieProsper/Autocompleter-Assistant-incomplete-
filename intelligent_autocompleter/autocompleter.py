@@ -12,6 +12,11 @@ from textwrap import dedent
 from trie import Trie
 from bktree import BKTree
 from context_predictor import ContextPredictor
+from embeddings import Embeddings
+from markov_predictor import MarkovPredictor
+from cache_utils import simple_lru, timed
+from threaded_runner import run_parallel
+
 
 init(autoreset=True)
 
@@ -25,6 +30,10 @@ class Autocompleter:
         self.stats = Counter()
         self._load_data()
 
+        self.emb = Embeddings()    # could call emb.load(path) in setup (if there is a model)
+        self.markov = MarkovPredictor()
+        # keep in-memory corpus list to train the markov quickly
+        self._local_sentences = []
     
     # Persistence ------------------------------------------------
     def _load_data(self):
@@ -60,6 +69,8 @@ class Autocompleter:
             self.bktree.insert(w)
             self._save_word(w)
         self.context.learn(text)
+        self.markov.train_sentence(text)
+        self._local_sentences.append(text)
 
     def suggest(self, prefix: str):
         """Return a ranked list of suggestions (context + fuzzy + prefix)."""
@@ -75,15 +86,45 @@ class Autocompleter:
         for w in context_suggestions:
             ranked[w] += 2
         return [w for w, _ in ranked.most_common(5)]
+        # OR - EXTEND OR REPLACE??
+    
+        prefix = text.strip().lower().split()[-1] if text.strip() else ""
+        # prefix matches
+        pref = [w for w, _ in self.trie.search_prefix(prefix)]
+        # fuzzy matches
+        fuzzy = [w for w, _ in self.bktree.query(prefix, max_dist=1)]
+        # context / markov
+        prev = text.strip().split()[-2] if len(text.split()) > 1 else None
+        markov_cands = [w for w, _ in (self.markov.top_next(prev, topn=5) if prev else [])] if prev else []
+        # embeddings
+        emb_cands = []
+        if use_emb and self.emb._loaded:
+            emb_cands = [w for w, _ in self.emb.similar(prefix, topn=5)]
+        # scoring -simple weighted counts
+        score = {}
+        def add(cand, w):
+            score[cand] = score.get(cand, 0.0) + w
+        for w in pref:
+            add(w, 3.0)
+        for w in fuzzy:
+            add(w, 1.5)
+        for w in markov_cands:
+            add(w, 2.0)
+        for w in emb_cands:
+             add(w, 1.2)
+         # sort by score then freq (if in trie)
+         ranked = sorted(score.items(), key=lambda kv: (-kv[1], - (self.trie._find(kv[0]).frequency if self.trie._find(kv[0]) else 0)))
+         return [w for w, _ in ranked][:topn]
+
 
     # Reinforcement and Stats --------------------------------------------------
     def accept_suggestion(self, word: str):
-        """Reinforcement learning — boost the frequency of accepted words."""
+        """Reinforcement learning to boost the frequency of accepted words."""
         self.trie.insert(word)
         self.stats["accepted"] += 1
 
     def get_stats(self):
-        """Return usage statistics."""
+        """Return the usage statistics."""
         total_words = len(json.load(open(self.data_path, "r", encoding="utf-8"))["words"])
         return {
             "total_words": total_words,
@@ -92,7 +133,7 @@ class Autocompleter:
 
 # CLI Interface ----------------------------------------------------------------------
 class CLI:
-    """Interactive command-line interface for Autocompleter Assistant."""
+    """Interactive command-line interface."""
     def __init__(self):
         self.engine = Autocompleter()
 
@@ -154,3 +195,4 @@ class CLI:
 
 if __name__ == "__main__":
     CLI().run()
+
