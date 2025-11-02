@@ -21,7 +21,6 @@ from threaded_runner import run_parallel
 init(autoreset=True)
 
 class Autocompleter:
-    """Model using prefix, fuzzy, and contextual predictions."""
     def __init__(self, data_path: str = "data/user_data.json"):
         self.trie = Trie()
         self.bktree = BKTree()
@@ -37,7 +36,6 @@ class Autocompleter:
     
     # Persistence ------------------------------------------------
     def _load_data(self):
-        """Load user data (words and context) from disk."""
         if not self.data_path.exists():
             self.data_path.parent.mkdir(parents=True, exist_ok=True)
             self.data_path.write_text(json.dumps({"words": []}, indent=2))
@@ -51,7 +49,7 @@ class Autocompleter:
             self.bktree.insert(word)
 
     def _save_word(self, word: str):
-        """Persist a newly learned word to disk."""
+        """save/persist newly learnt word to disk."""
         if not word.isalpha():
             return
         data = json.load(open(self.data_path, "r", encoding="utf-8"))
@@ -60,7 +58,7 @@ class Autocompleter:
             with open(self.data_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             
-    # Learning and Suggestion ----------------------------------------
+    # Learning --------------------------------------------
     def learn_from_input(self, text: str):
         """Learn words and context from user input."""
         words = [w.lower() for w in text.split() if w.isalpha()]
@@ -72,68 +70,45 @@ class Autocompleter:
         self.markov.train_sentence(text)
         self._local_sentences.append(text)
 
-    def suggest(self, prefix: str):
+    # Suggestions --------------------------------------------
+    def suggest(self, prefix: str, topn: int = 5, use_emb=True):
         """Return a ranked list of suggestions (context + fuzzy + prefix)."""
-        prefix = prefix.lower().strip()
-        prefix_suggestions = self.trie.search_prefix(prefix)
-        fuzzy_suggestions = self.bktree.query(prefix, max_dist=1)
-        context_suggestions = self.context.predict(prefix)
-        ranked = Counter()
-        for w, freq in prefix_suggestions:
-            ranked[w] += 3 + freq
-        for w, dist in fuzzy_suggestions:
-            ranked[w] += max(1, 2 - dist)
-        for w in context_suggestions:
-            ranked[w] += 2
-        return [w for w, _ in ranked.most_common(5)]
-        # OR - EXTEND OR REPLACE??
-    
-        prefix = text.strip().lower().split()[-1] if text.strip() else ""
-        # prefix matches
+        text = text.strip().lower()
+        prefix = text.split()[-1] if text else ""
+        if not prefix:
+            return []
         pref = [w for w, _ in self.trie.search_prefix(prefix)]
-        # fuzzy matches
         fuzzy = [w for w, _ in self.bktree.query(prefix, max_dist=1)]
-        # context / markov
-        prev = text.strip().split()[-2] if len(text.split()) > 1 else None
-        markov_cands = [w for w, _ in (self.markov.top_next(prev, topn=5) if prev else [])] if prev else []
-        # embeddings
-        emb_cands = []
-        if use_emb and self.emb._loaded:
-            emb_cands = [w for w, _ in self.emb.similar(prefix, topn=5)]
-        # scoring -simple weighted counts
+        prev = text.split()[-2] if len(text.split()) > 1 else None
+        markov_cands = [w for w, _ in self.markov.top_next(prev, topn=topn)] if prev else []
+        emb_cands = [w for w, _ in self.emb.similar(prefix, topn=topn)] if use_emb and self.emb._loaded else []
+
         score = {}
-        def add(cand, w):
-            score[cand] = score.get(cand, 0.0) + w
-        for w in pref:
-            add(w, 3.0)
-        for w in fuzzy:
-            add(w, 1.5)
-        for w in markov_cands:
-            add(w, 2.0)
-        for w in emb_cands:
-             add(w, 1.2)
-         # sort by score then freq (if in trie)
-         ranked = sorted(score.items(), key=lambda kv: (-kv[1], - (self.trie._find(kv[0]).frequency if self.trie._find(kv[0]) else 0)))
-         return [w for w, _ in ranked][:topn]
+        def add(word, w): score[word] = score.get(word, 0) + w
+        for w in pref: add(w, 3.0)
+        for w in fuzzy: add(w, 1.5)
+        for w in markov_cands: add(w, 2.0)
+        for w in emb_cands: add(w, 1.2)
 
+        ranked = sorted(score.items(), key=lambda kv: -kv[1])
+        return [w for w, _ in ranked][:topn]
 
-    # Reinforcement and Stats --------------------------------------------------
+    # Reinforcement --------------------------------------------------
     def accept_suggestion(self, word: str):
         """Reinforcement learning to boost the frequency of accepted words."""
         self.trie.insert(word)
         self.stats["accepted"] += 1
 
     def get_stats(self):
-        """Return the usage statistics."""
+        """Return usage statistics."""
         total_words = len(json.load(open(self.data_path, "r", encoding="utf-8"))["words"])
         return {
             "total_words": total_words,
             "accepted_suggestions": self.stats["accepted"],
         }
 
-# CLI Interface ----------------------------------------------------------------------
+# CLI Interface --------------------------------------------------------
 class CLI:
-    """Interactive command-line interface."""
     def __init__(self):
         self.engine = Autocompleter()
 
@@ -151,7 +126,7 @@ class CLI:
               /help     Show this help message
               /stats    Show model statistics
               /quit     Exit the program
-            Simply type any word or sentence to get suggestions.
+             Type any word or sentence to get suggestions.
         """))
 
     def run(self):
@@ -181,7 +156,6 @@ class CLI:
                 if not suggestions:
                     print(Fore.MAGENTA + "No suggestions yet.")
                     continue
-
                 print(Fore.CYAN + "Suggestions:", ", ".join(suggestions))
                 accept = input(Fore.GREEN + "Accept suggestion? (y/n) ").strip().lower()
                 if accept.startswith("y"):
@@ -192,19 +166,20 @@ class CLI:
                 print(Fore.CYAN + "\nExiting Autocompleter Assistant. Bye!")
                 sys.exit(0)
 
-    def bench_suggest(engine, prefixes, runs=5):
-        import time
-         times = []
-        for _ in range(runs):
-            t0 = time.perf_counter()
-            for p in prefixes:
-                engine.suggest(p)
-            t1 = time.perf_counter()
-            times.append((t1 - t0) / len(prefixes))
-        return sum(times) / len(times)
+# Benchmark Helper -----------------------------------------------
+def bench_suggest(engine, prefixes, runs=5):
+    import time
+    times = []
+    for _ in range(runs):
+        t0 = time.perf_counter()
+        for p in prefixes:
+            engine.suggest(p)
+        times.append((time.perf_counter() - t0) / len(prefixes))
+    return sum(times) / len(times)
 
 
 if __name__ == "__main__":
     CLI().run()
+
 
 
