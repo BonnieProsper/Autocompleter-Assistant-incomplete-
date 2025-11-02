@@ -1,17 +1,17 @@
 # Autocompleter-Assistant
 
-An intelligent, self-learning autocompleter that uses a Trie, BK-tree (for fuzzy matching), and contextual bigram learning to improve text suggestions over time.
+A self-learning autocompleter that uses a Trie, BK-tree and contextual bigram learning to improve its text suggestions over time.
 
 ---
 
 ## Features
 
-- Fast prefix-based search using Trie
-- Fuzzy spelling correction via BK-tree
-- Context learning with bigrams and reinforcement
+- Prefix-based searching using Trie
+- Fuzzy spelling allowance using BK-tree
+- Learning in context using bigrams and reinforcement
 - Adaptive fuzzy logic
-- CLI interface with colorized output and statistics
-- Evaluation harness for performance comparison
+- CLI interface, including output and statistics
+- Evaluation harness used for performance comparisons
 
 ---
 
