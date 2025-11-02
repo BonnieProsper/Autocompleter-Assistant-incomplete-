@@ -192,7 +192,19 @@ class CLI:
                 print(Fore.CYAN + "\nExiting Autocompleter Assistant. Bye!")
                 sys.exit(0)
 
+    def bench_suggest(engine, prefixes, runs=5):
+        import time
+         times = []
+        for _ in range(runs):
+            t0 = time.perf_counter()
+            for p in prefixes:
+                engine.suggest(p)
+            t1 = time.perf_counter()
+            times.append((t1 - t0) / len(prefixes))
+        return sum(times) / len(times)
+
 
 if __name__ == "__main__":
     CLI().run()
+
 
