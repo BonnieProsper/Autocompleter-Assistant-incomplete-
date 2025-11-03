@@ -1,4 +1,4 @@
-# cli.py - CLI for smart text assistant
+# cli.py - CLI for text assistant
 
 import sys, shlex, time
 from hybrid_predictor import HybridPredictor
@@ -98,6 +98,15 @@ class CLI:
         elif c == "/export" and len(p) > 1:
             self.export_data(p[1])
             return
+
+        elif cmd.startswith("/suggest"):
+            word = cmd.split(" ", 1)[1] if " " in cmd else ""
+            if not word:
+                print("usage: /suggest <word>")
+                continue
+            results = core.predictor.suggest(word)
+            print("suggestions:", ", ".join(results))
+
 
         else:
             print("unknown cmd")
