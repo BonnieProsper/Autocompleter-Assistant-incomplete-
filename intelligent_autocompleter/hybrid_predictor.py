@@ -4,6 +4,7 @@ from markov_predictor import MarkovPredictor
 from embeddings import Embeddings
 from context_personal import CtxPersonal
 from collections import Counter
+from semantic_engine import SemanticEngine
 
 class HybridPredictor:
     def __init__(self, user="default"):
@@ -12,6 +13,7 @@ class HybridPredictor:
         self.ctx = CtxPersonal(user)
         self.alpha = 0.5    # markov/embed weight balance (0=markov only)
         self._trained = False
+        self.sem = SemanticEngine()
 
     # training -------------------------
     def train(self, lines):
@@ -32,6 +34,7 @@ class HybridPredictor:
         word = word.lower().strip()
         if not word:
             return []
+            
         # markov next-words (contextual)
         m_res = self.mk.top_next(word, topn=topn)
         m_rank = {w: sc for w, sc in m_res}
@@ -47,17 +50,19 @@ class HybridPredictor:
         for w, sc in e_rank.items():
             merged[w] += sc * self.alpha
 
+        # use semantic expansion if merging doesnt work
+        if not merged or len(merged) < topn:
+            sem_res = self.sem.similar(word, topn=topn)
+            for w, sc in sem_res:
+                merged[w] += sc * 0.4  # smaller influence weight
+
         suggs = merged.most_common(topn)
         # bias by user prefs
-        suggs = self.ctx.bias_words(suggs)
+        suggs = self.ctx.bias_words(suggs) 
         # normalize and return
-        return [(w, round(sc, 3)) for w, sc in suggs]
+        return [(w, round(sc, 3)) for w, sc in suggs] 
 
     def set_balance(self, val: float):
-        """set 0–1 balance between markov and embeddings"""
+        #adjust weighting between models (0-1)
         self.alpha = max(0.0, min(1.0, val))
 
-
-    def set_balance(self, val: float):
-        """adjust weighting between models (0..1)"""
-        self.alpha = max(0.0, min(1.0, val))
