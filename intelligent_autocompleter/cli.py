@@ -4,6 +4,7 @@ import sys, shlex, time
 from hybrid_predictor import HybridPredictor
 from config_manager import Config
 from metrics_tracker import Metrics
+from logger_utils import Log
 
 BANNER = "Smart Text Assistant (type /help for cmds)"
 
@@ -107,6 +108,12 @@ class CLI:
             results = core.predictor.suggest(word)
             print("suggestions:", ", ".join(results))
 
+        elif cmd == "train":
+            ac.train_file(path)
+            Log.write(f"Trained model with file: {path}")
+
+        elif cmd == "suggest":
+            Log.write(f"Suggestion request for '{word}'")
 
         else:
             print("unknown cmd")
