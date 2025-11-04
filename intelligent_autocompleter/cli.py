@@ -5,6 +5,7 @@ from hybrid_predictor import HybridPredictor
 from config_manager import Config
 from metrics_tracker import Metrics
 from logger_utils import Log
+from random import choice
 
 BANNER = "Smart Text Assistant (type /help for cmds)"
 
@@ -46,7 +47,7 @@ class CLI:
             
         elif c == "/help":
             print("cmds: /suggest <word>, /mode <m>, /train <f>, /bal <v>")
-            print("      /config [key val], /stats, /bench, /export <file>")
+            print("       /config [key val], /stats, /bench, /export <file>")
             return
             
         elif c == "/suggest" and len(p) > 1:
@@ -100,26 +101,10 @@ class CLI:
             self.export_data(p[1])
             return
 
-        elif cmd.startswith("/suggest"):
-            word = cmd.split(" ", 1)[1] if " " in cmd else ""
-            if not word:
-                print("usage: /suggest <word>")
-                continue
-            results = core.predictor.suggest(word)
-            print("suggestions:", ", ".join(results))
-
-        elif cmd == "train":
-            ac.train_file(path)
-            Log.write(f"Trained model with file: {path}")
-
-        elif cmd == "suggest":
-            Log.write(f"Suggestion request for '{word}'")
-
         else:
             print("unknown cmd")
 
     def train_file(self, path):
-        import time
         try:
             with open(path, "r", encoding="utf8") as f:
                 lines = [ln.strip() for ln in f if ln.strip()]
@@ -129,7 +114,7 @@ class CLI:
             self.metrics.record("train_file_time", dt)
             print(f"trained on {len(lines)} lines in {dt:.2f}s")
         except Exception as e:
-            print("err:", e)
+            print("Error:", e)
 
     def _bench(self):
         from random import choice
@@ -149,9 +134,9 @@ class CLI:
         try:
             with open(path, "w", encoding="utf8") as f:
                 json.dump(data, f, indent=2)
-            print("exported ->", path)
+            print("exported to", path)
         except Exception as e:
-            print("export err:", e)
+            print("export error:", e)
 
 
 if __name__ == "__main__":
