@@ -1,5 +1,5 @@
 # autocompleter.py
-# Autocompleter Assistant - an adaptive autocomplete system that uses Trie, BKTree, and ContextPredictor with persistence and CLI UX.
+# adaptive autocomplete system that uses Trie, BKTree, and ContextPredictor with persistence and CLI.
 
 import json
 import os
@@ -29,12 +29,12 @@ class Autocompleter:
         self.stats = Counter()
         self._load_data()
 
-        self.emb = Embeddings()    # could call emb.load(path) in setup (if there is a model)
+        self.emb = Embeddings()    # could call emb.load(path) in setup if model exists
         self.markov = MarkovPredictor()
-        # keep in-memory corpus list to train the markov quickly
+        # keep in-memory corpus list to train markov quickly
         self._local_sentences = []
     
-    # Persistence ------------------------------------------------
+    # Persistence --------------------------------------------
     def _load_data(self):
         if not self.data_path.exists():
             self.data_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,9 +70,9 @@ class Autocompleter:
         self.markov.train_sentence(text)
         self._local_sentences.append(text)
 
-    # Suggestions --------------------------------------------
+    # Suggestions ------------------------------------
     def suggest(self, prefix: str, topn: int = 5, use_emb=True):
-        """Return a ranked list of suggestions (context + fuzzy + prefix)."""
+        """Return ranked list of suggestions (context + fuzzy + prefix)."""
         text = text.strip().lower()
         prefix = text.split()[-1] if text else ""
         if not prefix:
@@ -95,12 +95,12 @@ class Autocompleter:
 
     # Reinforcement --------------------------------------------------
     def accept_suggestion(self, word: str):
-        """Reinforcement learning to boost the frequency of accepted words."""
+        """Reinforcement learning used to boost frequency of accepted words."""
         self.trie.insert(word)
         self.stats["accepted"] += 1
 
     def get_stats(self):
-        """Return usage statistics."""
+        """Return usage statistics"""
         total_words = len(json.load(open(self.data_path, "r", encoding="utf-8"))["words"])
         return {
             "total_words": total_words,
@@ -123,9 +123,9 @@ class CLI:
     def _help(self):
         print(Fore.YELLOW + dedent("""
             Commands:
-              /help     Show this help message
-              /stats    Show model statistics
-              /quit     Exit the program
+             /help     Show this help message
+             /stats    Show model statistics
+             /quit     Exit the program
              Type any word or sentence to get suggestions.
         """))
 
@@ -161,12 +161,12 @@ class CLI:
                 if accept.startswith("y"):
                     chosen = suggestions[0]
                     self.engine.accept_suggestion(chosen)
-                    print(Fore.YELLOW + f"✅ Learned preference for '{chosen}'")
+                    print(Fore.YELLOW + f" Learned preference for '{chosen}'")
             except (EOFError, KeyboardInterrupt):
                 print(Fore.CYAN + "\nExiting Autocompleter Assistant. Bye!")
                 sys.exit(0)
 
-# Benchmark Helper -----------------------------------------------
+# Benchmark Helper ---------------------------------------------
 def bench_suggest(engine, prefixes, runs=5):
     import time
     times = []
@@ -180,6 +180,7 @@ def bench_suggest(engine, prefixes, runs=5):
 
 if __name__ == "__main__":
     CLI().run()
+
 
 
 
