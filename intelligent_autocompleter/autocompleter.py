@@ -1,186 +1,181 @@
 # autocompleter.py
-# adaptive autocomplete system that uses Trie, BKTree, and ContextPredictor with persistence and CLI.
+# Orchestration core to load/save model state, tie HybridPredictor to persistence, small API for the CLI.
+# combines other files
 
-import json
-import os
-import sys
+import atexit
+import time
+from collections import defaultdict, Counter
 from pathlib import Path
-from collections import Counter
-from colorama import Fore, Style, init
-from textwrap import dedent
 
-from trie import Trie
-from bktree import BKTree
-from context_predictor import ContextPredictor
-from embeddings import Embeddings
+from hybrid_predictor import HybridPredictor
 from markov_predictor import MarkovPredictor
-from cache_utils import simple_lru, timed
-from threaded_runner import run_parallel
+from context_personal import CtxPersonal
+from logger_utils import Log
+from model_store import (
+    load_markov,
+    save_markov,
+    load_user_cache,
+    save_user_cache,
+)
 
 
-init(autoreset=True)
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
 
-class Autocompleter:
-    def __init__(self, data_path: str = "data/user_data.json"):
-        self.trie = Trie()
-        self.bktree = BKTree()
-        self.context = ContextPredictor()
-        self.data_path = Path(data_path)
-        self.stats = Counter()
-        self._load_data()
+class AutoCompleter:
+    """
+    Wrapper:
+     - initialise HybridPredictor
+     - restore saved markov table + user cache at start
+     - saves on exit
+     - simple api for cli/tests
+    """
 
-        self.emb = Embeddings()    # could call emb.load(path) in setup if model exists
-        self.markov = MarkovPredictor()
-        # keep in-memory corpus list to train markov quickly
-        self._local_sentences = []
-    
-    # Persistence --------------------------------------------
-    def _load_data(self):
-        if not self.data_path.exists():
-            self.data_path.parent.mkdir(parents=True, exist_ok=True)
-            self.data_path.write_text(json.dumps({"words": []}, indent=2))
+    def __init__(self, user="default"):
+        self.user = user
+        Log.write("Autocompleter init")
+        # main predictive engine (combines markov, embeddings and personalization)
+        self.hp = HybridPredictor(user=user)
+
+        # keep a handle to raw markov predictor for persistence tweaks
+        self.mk = self.hp.mk  # convenience alias - HybridPredictor has .mk as MarkovPredictor instance
+
+        # try to restore saved data from disk (markov table, user history)
+        self._load_persisted()
+        
+        # autosave on normal exit
+        atexit.register(self._shutdown)
+        self._started = time.time() # start timestamp
+
+    # Persistence helper logic  ---------------------------
+    def _load_persisted(self):
+        # load saved markov state from disk (should be mapping prev -> {next: count} or prev -> list (for legacy saves))
+        mdata = load_markov() or {}
+        if not mdata:
+            Log.write("No markov data found, starting from scratch.")
             return
 
-        with open(self.data_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        # convert loaded structure into MarkovPredictor's internal table
+        # accept: {prev: {next: count}} or {prev: [next, next, ...]}
+        # counters:
+        # tbl : bigram transition frequencies, unig: unigram totals (e.g frequency of each token)
+        tbl = defaultdict(Counter)
+        unig = Counter()
+        for prev, vals in mdata.items():
+            if isinstance(vals, dict):
+                for nxt, cnt in vals.items():
+                    tbl[prev][nxt] += int(cnt)
+                    unig[prev] += int(cnt)
+            elif isinstance(vals, list):
+                for nxt in vals:
+                    tbl[prev][nxt] += 1
+                    unig[prev] += 1
+            else:
+                # unknown shape, skip and ignore
+                continue
 
-        for word in data.get("words", []):
-            self.trie.insert(word)
-            self.bktree.insert(word)
+        # apply data to MarkovPredictor
+        try:
+            # markov predictor uses _table: defaultdict(Counter) and _unigrams Counter
+            self.mk._table = tbl
+            self.mk._unigrams = unig
+            Log.write(f"Restored markov data ({len(tbl)} keys)")
+        except Exception as e:
+            Log.write(f"Failed to restore markov into predictor: {e}")
 
-    def _save_word(self, word: str):
-        """save/persist newly learnt word to disk."""
-        if not word.isalpha():
-            return
-        data = json.load(open(self.data_path, "r", encoding="utf-8"))
-        if word not in data["words"]:
-            data["words"].append(word)
-            with open(self.data_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            
-    # Learning --------------------------------------------
-    def learn_from_input(self, text: str):
-        """Learn words and context from user input."""
-        words = [w.lower() for w in text.split() if w.isalpha()]
-        for w in words:
-            self.trie.insert(w)
-            self.bktree.insert(w)
-            self._save_word(w)
-        self.context.learn(text)
-        self.markov.train_sentence(text)
-        self._local_sentences.append(text)
+        # load user personalisation cache if available
+        ucache = load_user_cache() or {}
+        try:
+            # CtxPersonal stores history via self.hist. if empty, keep the existing history
+            if ucache.get("history"):
+                # convert list of phrases to per-word counts
+                for phrase in ucache.get("history", []):
+                    self.hp.ctx.learn(phrase)
+                Log.write(f"Restored user history ({len(ucache.get('history', []))} items)")
+        except Exception as e:
+            Log.write(f"Failed to restore user cache: {e}")
 
-    # Suggestions ------------------------------------
-    def suggest(self, prefix: str, topn: int = 5, use_emb=True):
-        """Return ranked list of suggestions (context + fuzzy + prefix)."""
-        text = text.strip().lower()
-        prefix = text.split()[-1] if text else ""
-        if not prefix:
-            return []
-        pref = [w for w, _ in self.trie.search_prefix(prefix)]
-        fuzzy = [w for w, _ in self.bktree.query(prefix, max_dist=1)]
-        prev = text.split()[-2] if len(text.split()) > 1 else None
-        markov_cands = [w for w, _ in self.markov.top_next(prev, topn=topn)] if prev else []
-        emb_cands = [w for w, _ in self.emb.similar(prefix, topn=topn)] if use_emb and self.emb._loaded else []
+    def _serialize_markov(self):
+        """
+        Convert MarkovPredictor's internal table to JSON-serializable plain dictionary:
+        prev -> {next: count}
+        """
+        out = {}
+        try:
+            for prev, counter in self.mk._table.items():
+                if isinstance(counter, Counter):
+                    out[prev] = dict(counter)
+                else:
+                    #  if it's a list, convert to counter first
+                    out[prev] = dict(Counter(counter))
+        except Exception as e:
+            Log.write(f"Error serialising Markov model: {e}")
+        return out
 
-        score = {}
-        def add(word, w): score[word] = score.get(word, 0) + w
-        for w in pref: add(w, 3.0)
-        for w in fuzzy: add(w, 1.5)
-        for w in markov_cands: add(w, 2.0)
-        for w in emb_cands: add(w, 1.2)
+    def _shutdown(self):
+        """save models and user cache at exit"""
+        Log.write("Shutdown: saving state to disk")
 
-        ranked = sorted(score.items(), key=lambda kv: -kv[1])
-        return [w for w, _ in ranked][:topn]
+        # save markov chain by converting to prev -> {next: count}
+        try:
+            mdata = self._serialize_markov()
+            save_markov(mdata)
+        except Exception as e:
+            Log.write(f"save_markov failed: {e}")
 
-    # Reinforcement --------------------------------------------------
-    def accept_suggestion(self, word: str):
-        """Reinforcement learning used to boost frequency of accepted words."""
-        self.trie.insert(word)
-        self.stats["accepted"] += 1
+        # save user cache (store history from CtxPersonal if it is available (above))
+        try:
+            hist = []
+            try:
+                # try to find prior history from ctx.hist or hp.ctx.hist (Counter)
+                if hasattr(self.hp.ctx, "hist"):
+                    # expand into a list
+                    # store fixed recent slice, top 200 most common entries to avoid too big files
+                    for w, cnt in self.hp.ctx.hist.most_common(200):
+                        # store the word > count times? store as word:count mapping
+                        hist.append({"word": w, "count": int(cnt)})
+                # object and metadata
+                uobj = {
+                    "history": hist,
+                    "saved_at": int(time.time()),
+                }
+                save_user_cache(uobj)
+                Log.write("User cache saved")
+            except Exception:
+                # fallback
+                save_user_cache({"history": hist})
+        except Exception as e:
+            Log.write(f"Failed to save user cache: {e}")
 
-    def get_stats(self):
-        """Return usage statistics"""
-        total_words = len(json.load(open(self.data_path, "r", encoding="utf-8"))["words"])
+    # API -------------------------------------
+    def train_lines(self, lines):
+        """Train model on list of lines (corpus.txt)."""
+        self.hp.train(lines)
+
+    def retrain(self, sentence):
+        """Update incrimentally with new sentence."""
+        self.hp.retrain(sentence)
+
+    def suggest(self, prefix, topn=5):
+        """Return suggestions from hybrid predictor based on prefix given."""
+        return self.hp.suggest(prefix, topn=topn)
+
+    def accept(self, word):
+        """Called when user accepts a suggestion, model reinforces succesfull predictions as training"""
+        self.hp.accept_suggestion(word)
+
+    def stats(self):
+        """Return a summary of stats."""
         return {
-            "total_words": total_words,
-            "accepted_suggestions": self.stats["accepted"],
+            "uptime_s": round(time.time() - self._started, 1),
+            "vocab_size": len(list(self.hp.trie.iter_words_from(""))),
         }
 
-# CLI Interface --------------------------------------------------------
-class CLI:
-    def __init__(self):
-        self.engine = Autocompleter()
 
-    def _banner(self):
-        print(Fore.CYAN + Style.BRIGHT + dedent("""
-             -----------------------------------------
-                   AUTOCOMPLETER ASSISTANT v1.0          
-              Adaptive learning, context & fuzzy logic.   
-             -----------------------------------------
-        """))
-
-    def _help(self):
-        print(Fore.YELLOW + dedent("""
-            Commands:
-             /help     Show this help message
-             /stats    Show model statistics
-             /quit     Exit the program
-             Type any word or sentence to get suggestions.
-        """))
-
-    def run(self):
-        self._banner()
-        while True:
-            try:
-                text = input(Fore.GREEN + "You: ").strip()
-                if not text:
-                    continue
-                if text.startswith("/"):
-                    if text == "/quit":
-                        print(Fore.CYAN + "Goodbye!")
-                        break
-                    elif text == "/help":
-                        self._help()
-                    elif text == "/stats":
-                        stats = self.engine.get_stats()
-                        print(Fore.BLUE + f"Total learned words: {stats['total_words']}")
-                        print(Fore.BLUE + f"Accepted suggestions: {stats['accepted_suggestions']}")
-                    else:
-                        print(Fore.RED + "Unknown command. Try /help.")
-                    continue
-
-                # Learn and suggest
-                self.engine.learn_from_input(text)
-                suggestions = self.engine.suggest(text.split()[-1])
-                if not suggestions:
-                    print(Fore.MAGENTA + "No suggestions yet.")
-                    continue
-                print(Fore.CYAN + "Suggestions:", ", ".join(suggestions))
-                accept = input(Fore.GREEN + "Accept suggestion? (y/n) ").strip().lower()
-                if accept.startswith("y"):
-                    chosen = suggestions[0]
-                    self.engine.accept_suggestion(chosen)
-                    print(Fore.YELLOW + f" Learned preference for '{chosen}'")
-            except (EOFError, KeyboardInterrupt):
-                print(Fore.CYAN + "\nExiting Autocompleter Assistant. Bye!")
-                sys.exit(0)
-
-# Benchmark Helper ---------------------------------------------
-def bench_suggest(engine, prefixes, runs=5):
-    import time
-    times = []
-    for _ in range(runs):
-        t0 = time.perf_counter()
-        for p in prefixes:
-            engine.suggest(p)
-        times.append((time.perf_counter() - t0) / len(prefixes))
-    return sum(times) / len(times)
-
-
+# small manual test when run directly
 if __name__ == "__main__":
-    CLI().run()
-
+    ac = AutoCompleter()
+    print("Autocompleter loaded. Try ac.suggest('the') or ac.train_lines([...])")
 
 
 
