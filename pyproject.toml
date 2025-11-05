@@ -1,0 +1,21 @@
+[project]
+name = "autocompleter-assistant"
+version = "0.1.0"
+description = "An intelligent autocomplete assistant combining semantic and statistical NLP models."
+authors = [{ name = "Bonnie McConnell" }]
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = [
+    "numpy",
+    "gensim",
+    "spacy",
+    "joblib",
+    "rich"
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
