@@ -1,1 +1,27 @@
+version: 1
+formatters:
+  standard:
+    format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    formatter: standard
+    level: INFO
+
+  file:
+    class: logging.FileHandler
+    filename: logs/autocompleter.log
+    formatter: standard
+    level: DEBUG
+
+loggers:
+  intelligent_autocompleter:
+    level: DEBUG
+    handlers: [console, file]
+    propagate: no
+
+root:
+  level: INFO
+  handlers: [console]
 
