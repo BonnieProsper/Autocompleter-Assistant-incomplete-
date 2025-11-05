@@ -1,13 +1,20 @@
 # cli.py - CLI for text assistant
 
-import sys, shlex, time
+import sys, shlex, time, os, pickle
 from hybrid_predictor import HybridPredictor
 from config_manager import Config
 from metrics_tracker import Metrics
 from logger_utils import Log
 from random import choice
 
+# go one dir up from this file -> then into data folder
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DEFAULT_CORPUS = os.path.join(DATA_DIR, "demo_corpus.txt")
+MODEL_PATH = os.path.join(DATA_DIR, "model_state.pkl")
+
 BANNER = "Smart Text Assistant (type /help for cmds)"
+
 
 class CLI:
     def __init__(self):
@@ -16,6 +23,9 @@ class CLI:
         self.metrics = Metrics()
         self.running = True
 
+        # try load model on startup
+        self._load_state()
+
     def start(self):
         print(BANNER)
         while self.running:
@@ -23,6 +33,7 @@ class CLI:
                 line = input(">> ").strip()
             except (EOFError, KeyboardInterrupt):
                 print("\nbye.")
+                self._save_state()
                 break
             if not line:
                 continue
@@ -34,41 +45,46 @@ class CLI:
                 dt = time.perf_counter() - t0
                 self.metrics.record("train_time", dt)
                 print(f"Learnt: ({dt*1000:.1f} ms)")
-    
+
     def cmd(self, line):
         p = shlex.split(line)
-        if not p: return
+        if not p:
+            return
         c = p[0].lower()
-        
+
         if c in ("/q", "/quit", "/exit"):
+            self._save_state()
             self.running = False
             print("bye.")
             return
-            
+
         elif c == "/help":
             print("cmds: /suggest <word>, /mode <m>, /train <f>, /bal <v>")
             print("       /config [key val], /stats, /bench, /export <file>")
             return
-            
+
         elif c == "/suggest" and len(p) > 1:
             w = p[1]
             t0 = time.perf_counter()
             out = self.hp.suggest(w)
             dt = time.perf_counter() - t0
             self.metrics.record("suggest_time", dt)
-            for s, sc in out:
-                print(f"{s}\t{sc:.3f}")
+            if out:
+                for s, sc in out:
+                    print(f"{s}\t{sc:.3f}")
+            else:
+                print("(no suggestion)")
             return
-                
+
         elif c == "/train" and len(p) > 1:
             self.train_file(p[1])
             return
-        
+
         elif c == "/mode" and len(p) > 1:
             self.set_mode(p[1])
             print("mode:", p[1])
             return
-            
+
         elif c == "/bal" and len(p) > 1:
             try:
                 v = float(p[1])
@@ -79,7 +95,7 @@ class CLI:
             except ValueError:
                 print("bad val")
             return
-        
+
         elif c == "/config":
             if len(p) == 1:
                 self.cfg.show()
@@ -113,11 +129,11 @@ class CLI:
             dt = time.perf_counter() - t0
             self.metrics.record("train_file_time", dt)
             print(f"trained on {len(lines)} lines in {dt:.2f}s")
+            self._save_state()
         except Exception as e:
             print("Error:", e)
 
     def _bench(self):
-        from random import choice
         words = ["the", "hello", "world", "this", "that", "there", "good"]
         t0 = time.perf_counter()
         for _ in range(100):
@@ -137,6 +153,32 @@ class CLI:
             print("exported to", path)
         except Exception as e:
             print("export error:", e)
+
+    def _save_state(self):
+        try:
+            with open(MODEL_PATH, "wb") as f:
+                pickle.dump(self.hp, f)
+            print("[saved model state]")
+        except Exception as e:
+            print("[warn] could not save model:", e)
+
+    def _load_state(self):
+        if os.path.exists(MODEL_PATH):
+            try:
+                with open(MODEL_PATH, "rb") as f:
+                    self.hp = pickle.load(f)
+                print(f"[loaded existing model: {MODEL_PATH}]")
+            except Exception as e:
+                print("[warn] could not load model:", e)
+        elif os.path.exists(DEFAULT_CORPUS):
+            print(f"[AutoTrain] Loading corpus: {DEFAULT_CORPUS}")
+            try:
+                self.train_file(DEFAULT_CORPUS)
+                print("[AutoTrain] Training complete.\n")
+            except Exception as e:
+                print("[AutoTrain] Skipped due to error:", e)
+        else:
+            print(f"[AutoTrain] No corpus found at {DEFAULT_CORPUS}")
 
 
 if __name__ == "__main__":
