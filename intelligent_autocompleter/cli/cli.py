@@ -14,6 +14,16 @@ from config_manager import Config
 from metrics_tracker import Metrics
 from logger_utils import Log
 
+import logging.config, yaml, os
+cfg_path = os.path.join(os.path.dirname(__file__), "utils", "logging_config.yaml")
+if os.path.exists(cfg_path):
+    with open(cfg_path, "r") as fh:
+        conf = yaml.safe_load(fh)
+    logging.config.dictConfig(conf)
+logger = logging.getLogger("intelligent_autocompleter")
+logger.info("Logging configured from YAML")
+
+
 
 # === Constants and paths ===
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
