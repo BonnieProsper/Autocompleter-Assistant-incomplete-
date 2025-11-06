@@ -10,6 +10,7 @@ os.makedirs(LOG_DIR, exist_ok=True)  # Create the folder if it doesn’t already
 
 # Path to the default log file, can be overriden
 DEFAULT_LOG_PATH = os.path.join(LOG_DIR, "autocompleter.log")
+MAX_LOG_SIZE = 1_000_000  # 1 MB per file before rotation
 
 class Log:
     """Lightweight logger for writing messages and tracking metrics."""
@@ -24,6 +25,16 @@ class Log:
     def __init__(self, path: str = None, use_color: bool = True):
         self.path = path or DEFAULT_LOG_PATH
         self.use_color = use_color
+        self._rotate_if_needed()
+
+    def _rotate_if_needed(self):
+        """Rotate log file if it exceeds MAX_LOG_SIZE."""
+        if os.path.exists(self.path) and os.path.getsize(self.path) >= MAX_LOG_SIZE:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup = f"{self.path}.{ts}.bak"
+            os.rename(self.path, backup)
+            with open(self.path, "w", encoding="utf-8") as f:
+                f.write(f"[{ts}] Log rotated → {backup}\n")
 
     def write(self, level:str, msg:str):
         """
@@ -33,7 +44,7 @@ class Log:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{ts}] {level:<7} | {msg}"
         
-        # Write to the log file
+        # append to log file
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
