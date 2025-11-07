@@ -14,6 +14,7 @@ from config_manager import Config
 from metrics_tracker import Metrics
 from logger_utils import Log
 
+# optional - logging config support from logging_config.yaml file
 import logging.config, yaml, os
 cfg_path = os.path.join(os.path.dirname(__file__), "utils", "logging_config.yaml")
 if os.path.exists(cfg_path):
@@ -25,14 +26,13 @@ logger.info("Logging configured from YAML")
 
 
 
-# === Constants and paths ===
+# Constants and paths ------------
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DEFAULT_CORPUS = os.path.join(DATA_DIR, "demo_corpus.txt")
 MODEL_PATH = os.path.join(DATA_DIR, "model_state.pkl")
 
 BANNER = "Smart Text Assistant (type /help for commands)"
-
 
 class CLI:
     def __init__(self):
@@ -76,7 +76,7 @@ class CLI:
                 self.log.debug(f"Retrained with line '{line}' in {dt:.3f}s.")
                 print(f"Learnt: ({dt*1000:.1f} ms)")
 
-    # === Command processor ===
+    # Command processor ----------------------
     def cmd(self, line):
         p = shlex.split(line)
         if not p:
