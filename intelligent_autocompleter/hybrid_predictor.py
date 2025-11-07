@@ -2,7 +2,7 @@
 # with adaptive fuzzy distance, BK cache, lightweight reinforcement.
 
 import time
-from collections import Counter
+from collections import Counter, deque
 from markov_predictor import MarkovPredictor
 from embeddings import Embeddings
 from context_personal import CtxPersonal
@@ -11,14 +11,26 @@ from logger_utils import Log
 from bktree import BKTree
 
 class HybridPredictor:
-    def __init__(self, user="default"):
+    """
+    hybrid_predictor.py combines three knowledge sources:
+      - Markov chain probabilities (syntactic structure)
+      - Word embeddings (semantic proximity)
+      - User personalization (biasing + context memory)
+
+    It can optionally use multi-word context to predict the next word
+    based on the recent sentence fragment.
+    """
+    def __init__(self, user="default", context_window=2):
         self.mk = MarkovPredictor()
         self.emb = Embeddings()
         self.ctx = CtxPersonal(user)
         self.alpha = 0.5   # markov/embed weight balance (0=markov only)
         self._trained = False
         self.sem = SemanticEngine()
+        self.context_window = context_window
 
+        """
+        take the following out?
         # BK-tree for fuzzy lookups, synced with the training
         self.bk = BKTree()
 
@@ -29,6 +41,7 @@ class HybridPredictor:
         self._bk_cache = {}
         self._bk_cache_time = {}
         self._bk_cache_ttl = 60.0  # seconds
+        """
 
     # training -----------------------
     def train(self, lines):
@@ -39,6 +52,7 @@ class HybridPredictor:
             for ln in lines:
                 self.mk.train_sentence(ln)
                 self.ctx.learn(ln)
+                """ - take out?
                 # update BK with words from the line
                 for tok in self._tokens_from_line(ln):
                     try:
@@ -46,21 +60,25 @@ class HybridPredictor:
                     except Exception:
                         # BK insert could fail on stray tokens, if so ignore/continue
                         pass
+                """ 
             self.ctx.save()
             self._trained = True
 
-    def retrain(self, s):
+    def retrain(self, sentence):
         """update from interactive input."""
-        self.mk.train_sentence(s)
-        self.ctx.learn(s)
+        self.mk.train_sentence(sentence)
+        self.ctx.learn(sentence)
+        """
         for tok in self._tokens_from_line(s):
             try:
                 self.bk.insert(tok)
             except Exception:
                 pass
+        """
         self.ctx.save()
         self._trained = True
 
+    """ take out
     # helpers -----------------------
     def _tokens_from_line(self, s):
         # keep alpha-only tokens
@@ -99,8 +117,9 @@ class HybridPredictor:
         self._bk_cache[key] = res
         self._bk_cache_time[key] = now
         return res
+    """
 
-    # manage suggestions ------------------------
+    # manage context aware suggestions ------------------------
     def suggest(self, word, topn=5):
         """
         Return a list of (word,score) suggestions.
