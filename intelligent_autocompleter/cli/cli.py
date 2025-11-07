@@ -1,5 +1,4 @@
-# cli.py — Command Line Interface for Smart Text Assistant
-# Handles user interaction, commands, and integrates the hybrid prediction system.
+# cli.py — command line interface for user interaction, commands, integrates the hybrid prediction system.
 
 import sys
 import shlex 
@@ -14,7 +13,7 @@ from config_manager import Config
 from metrics_tracker import Metrics
 from logger_utils import Log
 
-# optional - logging config support from logging_config.yaml file
+# logging config support from logging_config.yaml file, is optional
 import logging.config, yaml, os
 cfg_path = os.path.join(os.path.dirname(__file__), "utils", "logging_config.yaml")
 if os.path.exists(cfg_path):
@@ -26,7 +25,7 @@ logger.info("Logging configured from YAML")
 
 
 
-# Constants and paths ------------
+# Initialise constants/paths --------------------
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DEFAULT_CORPUS = os.path.join(DATA_DIR, "demo_corpus.txt")
@@ -37,8 +36,7 @@ BANNER = "Smart Text Assistant (type /help for commands)"
 class CLI:
     def __init__(self):
         # Initialize logging first, so all other subsystems can use it
-        log_path = os.path.join(DATA_DIR, "assistant.log")
-        self.log = Log(log_path)
+        self.log = Log
         self.log.info("=== Smart Text Assistant started ===")
 
         # Initialize core modules
@@ -50,19 +48,19 @@ class CLI:
         # Load existing model if present
         self._load_state()
 
-    # === Main interactive loop ===
+    # Main interactive loop -----------------
     def start(self):
         print(BANNER)
-        self.log.info("CLI session started.")
+        self.log.write("CLI session started.")
         while self.running:
             try:
                 line = input(">> ").strip()
             except (EOFError, KeyboardInterrupt):
                 print("\nbye.")
-                self.log.info("Session ended by user.")
+                self.log.write("Session ended by user.")
                 self._save_state()
                 break
-
+            
             if not line:
                 continue
 
@@ -83,101 +81,125 @@ class CLI:
             return
         cmd = p[0].lower()
 
-        match cmd:
-            case "/q" | "/quit" | "/exit":
-                self._save_state()
-                self.running = False
-                print("bye.")
-                self.log.info("Exited normally.")
-                return
+        if cmd in ("/q", "/quit", "/exit"):
+            self._save_state()
+            self.running = False
+            print("bye.")
+            self.log.write("Exited normally.")
+            return
 
-            case "/help":
-                print("Commands:")
-                print("  /suggest <word>    : show predictions")
-                print("  /mode <name>       : set model mode")
-                print("  /train <file>      : train from file")
-                print("  /bal <value>       : adjust balance")
-                print("  /config [key val]  : view/set config")
-                print("  /stats             : show performance metrics")
-                print("  /bench             : benchmark suggestion speed")
-                print("  /export <file>     : export data summary")
-                print("  /quit              : exit program")
-                return
+        if cmd == "/help":
+            print("Commands:")
+            print("  /suggest <word>    : show predictions")
+            print("  /train <file>      : train from file")
+            print("  /bal <value>       : adjust balance")
+            print("  /config [key val]  : view/set config")
+            print("  /stats             : show performance metrics")
+            print("  /bench             : benchmark suggestion speed")
+            print("  /export <file>     : export data summary")
+            print("  /quit              : exit program")
+            return
 
-            case "/suggest" if len(p) > 1:
-                self._suggest(p[1])
-                return
+        if cmd == "/suggest" and len(p) > 1:
+            self._suggest(p[1])
+            return
 
-            case "/train" if len(p) > 1:
-                self.train_file(p[1])
-                return
+        if cmd == "/train" and len(p) > 1:
+            self.train_file(p[1])
+            return
 
-            case "/mode" if len(p) > 1:
-                self.set_mode(p[1])
-                print("mode:", p[1])
-                self.log.info(f"Mode changed to {p[1]}")
-                return
+        if cmd == "/bal" and len(p) > 1:
+            try:
+                val = float(p[1])
+                self.hp.set_balance(val)
+                self.cfg.data["balance"] = val
+                self.cfg.save()
+                print("balance=", self.hp.alpha)
+                self.log.write(f"Balance set to {val}")
+            except ValueError:
+                print("bad val")
+                self.log.write(f"Invalid balance value: {p[1]}")
+            return
 
-            case "/bal" if len(p) > 1:
-                try:
-                    val = float(p[1])
-                    self.hp.set_balance(val)
-                    self.cfg.data["balance"] = val
-                    self.cfg.save()
-                    print("balance=", self.hp.alpha)
-                    self.log.info(f"Balance set to {val}")
-                except ValueError:
-                    print("bad val")
-                    self.log.warning(f"Invalid balance value: {p[1]}")
-                return
+        if cmd == "/config":
+            if len(p) == 1:
+                self.cfg.show()
+            elif len(p) == 3:
+                self.cfg.set(p[1], p[2])
+                self.log.write(f"Config updated: {p[1]}={p[2]}")
+            else:
+                print("usage: /config [key val]")
+            return
 
-            case "/config":
-                self._config_cmd(p)
-                return
+        if cmd == "/stats":
+            self.metrics.show()
+            return
 
-            case "/stats":
-                self.metrics.show()
-                return
+        if cmd == "/bench":
+            self._bench()
+            return
 
-            case "/bench":
-                self._bench()
-                return
+        if cmd == "/export" and len(p) > 1:
+            self.export_data(p[1])
+            return
 
-            case "/export" if len(p) > 1:
-                self.export_data(p[1])
-                return
+        print("unknown cmd")
+        self.log.write(f"Unknown command: {cmd}")
 
-            case _:
-                print("unknown cmd")
-                self.log.warning(f"Unknown command: {cmd}")
-
-    # === Suggestion helper ===
+    # Suggestion helper -----------------
     def _suggest(self, word):
         t0 = time.perf_counter()
         out = self.hp.suggest(word)
         dt = time.perf_counter() - t0
         self.metrics.record("suggest_time", dt)
-
-        if out:
-            for s, sc in out:
-                print(f"{s}\t{sc:.3f}")
-        else:
+        if not out:
             print("(no suggestion)")
-        self.log.debug(f"Suggested for '{word}' in {dt:.3f}s ({len(out) if out else 0} results).")
+            self.log.write(f"No suggestions for '{word}'")
+            return
 
-    # === Config helper ===
-    def _config_cmd(self, p):
-        if len(p) == 1:
-            self.cfg.show()
-        elif len(p) == 3:
-            self.cfg.set(p[1], p[2])
-            self.log.info(f"Config updated: {p[1]}={p[2]}")
+        # give numbered choices and allow user to accept them
+        print("\nSuggestions:")
+        for i, (s, sc) in enumerate(out, start=1):
+            print(f"  {i}. {s} (score {sc:.3f})")
+        print("  0. none / type another word")
+
+        choice = input("Pick [num / word / Enter]: ").strip()
+        if not choice:
+            return
+        if choice.isdigit():
+            idx = int(choice)
+            if idx == 0:
+                return
+            if 1 <= idx <= len(out):
+                chosen = out[idx - 1][0]
+                self.hp.accept(chosen)
+                self._save_state()
+                print(f"Accepted '{chosen}'")
+                self.log.write(f"User accepted suggestion '{chosen}'")
+                return
+            else:
+                print("bad number")
+                return
+        # typed word selection
+        chosen = choice.lower().strip()
+        # if typed matches suggestion accept it
+        if any(chosen == s for s, _ in out):
+            self.hp.accept(chosen)
+            self._save_state()
+            print(f"Accepted '{chosen}'")
+            self.log.write(f"User accepted suggestion '{chosen}'")
         else:
-            print("usage: /config [key val]")
+            # treat as new word, retrain/add it
+            self.hp.retrain(chosen)
+            self._save_state()
+            print(f"Added '{chosen}' to model")
+            self.log.write(f"User added new word '{chosen}'")
 
-    # === File-based training ===
+    # Train using file -----------------
     def train_file(self, path):
         try:
+            # expand paths
+            path = os.path.expanduser(path)
             with open(path, "r", encoding="utf8") as f:
                 lines = [ln.strip() for ln in f if ln.strip()]
             t0 = time.perf_counter()
@@ -186,12 +208,12 @@ class CLI:
             self.metrics.record("train_file_time", dt)
             print(f"trained on {len(lines)} lines in {dt:.2f}s")
             self._save_state()
-            self.log.info(f"Trained from file {path} ({len(lines)} lines, {dt:.2f}s).")
+            self.log.write(f"Trained from file {path} ({len(lines)} lines, {dt:.2f}s)")
         except Exception as e:
             print("Error:", e)
-            self.log.error(f"Failed to train from {path}: {e}")
+            self.log.write(f"Failed to train from {path}: {e}")
 
-    # === Benchmark ===
+    # Benchmark -------------------------------
     def _bench(self):
         words = ["the", "hello", "world", "this", "that", "there", "good"]
         t0 = time.perf_counter()
@@ -202,7 +224,7 @@ class CLI:
         print(f"bench: {avg:.5f}s avg per suggest")
         self.log.info(f"Benchmark completed: {avg:.5f}s avg")
 
-    # === Data export ===
+    # export data ----------------------------
     def export_data(self, path):
         data = {
             "config": self.cfg.data,
@@ -212,21 +234,22 @@ class CLI:
             with open(path, "w", encoding="utf8") as f:
                 json.dump(data, f, indent=2)
             print("exported to", path)
-            self.log.info(f"Exported summary to {path}")
+            self.log.write(f"Exported summary to {path}")
         except Exception as e:
             print("export error:", e)
             self.log.error(f"Export failed: {e}")
 
-    # === State management ===
+    # State management -------------------------------------
     def _save_state(self):
         try:
+            os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
             with open(MODEL_PATH, "wb") as f:
                 pickle.dump(self.hp, f)
             print("[saved model state]")
-            self.log.info("Model state saved successfully.")
+            self.log.write("Model state saved successfully.")
         except Exception as e:
             print("[warn] could not save model:", e)
-            self.log.error(f"Model save failed: {e}")
+            self.log.write(f"Model save failed: {e}")
 
     def _load_state(self):
         if os.path.exists(MODEL_PATH):
@@ -237,19 +260,19 @@ class CLI:
                 self.log.info("Model loaded successfully.")
             except Exception as e:
                 print("[warn] could not load model:", e)
-                self.log.error(f"Model load failed: {e}")
+                self.log.write(f"Model load failed: {e}")
         elif os.path.exists(DEFAULT_CORPUS):
             print(f"[AutoTrain] Loading corpus: {DEFAULT_CORPUS}")
             try:
                 self.train_file(DEFAULT_CORPUS)
                 print("[AutoTrain] Training complete.\n")
-                self.log.info("Auto-trained from default corpus.")
+                self.log.write("Auto-trained from default corpus.")
             except Exception as e:
                 print("[AutoTrain] Skipped due to error:", e)
-                self.log.error(f"AutoTrain failed: {e}")
+                self.log.write(f"AutoTrain failed: {e}")
         else:
             print(f"[AutoTrain] No corpus found at {DEFAULT_CORPUS}")
-            self.log.warning("No default corpus found for AutoTrain.")
+            self.log.write("No default corpus found for AutoTrain.")
 
 
 if __name__ == "__main__":
