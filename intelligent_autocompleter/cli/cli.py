@@ -98,6 +98,7 @@ class CLI:
             print("  /bench             : benchmark suggestion speed")
             print("  /export <file>     : export data summary")
             print("  /quit              : exit program")
+            print("  /ctx               : show context")
             return
 
         if cmd == "/suggest" and len(p) > 1:
