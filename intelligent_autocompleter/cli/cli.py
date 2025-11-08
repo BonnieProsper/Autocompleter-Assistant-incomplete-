@@ -143,6 +143,16 @@ class CLI:
             self.export_data(p[1])
             return
 
+        if cmd == "/ctx" and len(p) > 1:
+            try:
+                n = int(p[1])
+                self.hp.set_context_window(n)
+                print(f"context window = {n}")
+                self.log.info(f"Context window updated to {n}")
+            except ValueError:
+                print("usage: /ctx <int>")
+
+
         print("unknown cmd")
         self.log.write(f"Unknown command: {cmd}")
 
