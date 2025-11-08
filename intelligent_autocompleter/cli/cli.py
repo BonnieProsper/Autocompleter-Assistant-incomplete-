@@ -99,6 +99,8 @@ class CLI:
             print("  /export <file>     : export data summary")
             print("  /quit              : exit program")
             print("  /ctx               : show context")
+            print("  /forget            : Clear memory")
+            print("  /whoami            : Show user history/context")
             return
 
         if cmd == "/suggest" and len(p) > 1:
@@ -152,6 +154,19 @@ class CLI:
                 self.log.info(f"Context window updated to {n}")
             except ValueError:
                 print("usage: /ctx <int>")
+
+        if cmd == "/forget":
+            self.hp.ctx.reset()
+            print("personal memory cleared")
+            self.log.info("User context reset.")
+            return
+
+        if cmd == "/whoami":
+            print("Current user:", self.hp.ctx.user)
+            print("Learned words:", len(self.hp.ctx.freq))
+            self.log.info(f"User context inspected: {self.hp.ctx.user}")
+            return
+
 
 
         print("unknown cmd")
