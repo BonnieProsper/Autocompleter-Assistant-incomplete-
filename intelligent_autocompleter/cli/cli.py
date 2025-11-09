@@ -101,6 +101,7 @@ class CLI:
             print("  /ctx               : show context")
             print("  /forget            : Clear memory")
             print("  /whoami            : Show user history/context")
+            print("  /mode              : Change fusion mode")
             return
 
         if cmd == "/suggest" and len(p) > 1:
@@ -166,6 +167,15 @@ class CLI:
             print("Learned words:", len(self.hp.ctx.freq))
             self.log.info(f"User context inspected: {self.hp.ctx.user}")
             return
+
+        elif cmd == "/mode":
+            _, preset = cmd.split(maxsplit=1)
+            try:
+                predictor.set_mode(preset)
+                print(f"Fusion mode switched to '{preset}'.")
+            except ValueError:
+                print("Invalid mode. Try: balanced, strict, personal, neutral.")
+
 
 
 
