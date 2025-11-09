@@ -11,6 +11,10 @@ from context_personal import CtxPersonal
 from semantic_engine import SemanticEngine
 from logger_utils import Log
 from bktree import BKTree
+from fusion_ranker import FusionRanker
+
+# create once (reuse) in constructor
+self.rankr = FusionRanker(preset="balanced", personalizer=self.ctx)
 
 
 class HybridPredictor:
@@ -179,6 +183,18 @@ class HybridPredictor:
         except Exception as e:
             Log.write(f"[ERROR] suggest({q}): {e}")
             return []
+
+        m_res = self.mk.top_next(last_word, topn=10)      # [(w,count), ...]
+        e_res = self.emb.similar(last_word, topn=10)      # [(w,sim), ...]
+        f_res = self._bk_query_cached(last_word, maxd)    # [(w,dist), ...]
+        freq_map = self._word_freq_map()                  # {w:count}
+
+final = self.rankr.rank(markov=m_res,
+                        embeddings=e_res,
+                        fuzzy=f_res,
+                        base_freq=freq_map,
+                        recency_map=self.ctx.get_recency_map(),  # optional
+                        topn=8)
 
     # reinforcement and tuning -------------------------------------
     def accept(self, word: str) -> None:
