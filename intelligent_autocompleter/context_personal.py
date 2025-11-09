@@ -13,7 +13,6 @@ try:
 except Exception:
     NLP = None
 
-
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "userdata")
 
 
