@@ -172,3 +172,70 @@ class FusionRanker:
         ranked = sorted(ranked, key=lambda kv: -kv[1])
         return [(w, round(float(sc), 4)) for w, sc in ranked[:topn]]
 
+"""
+Alternative??
+
+# fusion_ranker.py
+# fusion ranker for experiments and presets.
+
+from typing import Dict, List, Tuple
+from collections import defaultdict
+
+Scores = Dict[str, float]
+
+
+class FusionRanker:
+    """
+    Lightweight fusion ranker with a few presets.
+    Not fancy — easy to read and tweak.
+    """
+
+    PRESETS = {
+        "balanced": {"markov": 0.4, "embed": 0.4, "personal": 0.15, "freq": 0.05},
+        "strict":   {"markov": 0.7, "embed": 0.15, "personal": 0.1,  "freq": 0.05},
+        "personal": {"markov": 0.2, "embed": 0.2,  "personal": 0.55, "freq": 0.05},
+        "semantic": {"markov": 0.1, "embed": 0.75, "personal": 0.1,  "freq": 0.05},
+    }
+
+    def __init__(self, preset: str = "balanced"):
+        self.update_preset(preset)
+
+    def update_preset(self, preset: str):
+        if preset not in self.PRESETS:
+            raise ValueError(f"unknown preset: {preset!r}")
+        self.preset = preset
+        self.weights = self.PRESETS[preset]
+
+    def _all_words(self, *score_maps: Scores):
+        s = set()
+        for m in score_maps:
+            s.update(m.keys())
+        return s
+
+    def fuse(self, markov: Scores, embed: Scores,
+             personal: Scores, freq: Scores) -> Scores:
+        out: Scores = {}
+        for w in self._all_words(markov, embed, personal, freq):
+            m = markov.get(w, 0.0)
+            e = embed.get(w, 0.0)
+            p = personal.get(w, 0.0)
+            f = freq.get(w, 0.0)
+            # linear combination — simple and explainable
+            out[w] = (self.weights["markov"] * m +
+                      self.weights["embed"] * e +
+                      self.weights["personal"] * p +
+                      self.weights["freq"] * f)
+        return out
+
+    def rank(self, markov: Scores, embed: Scores,
+             personal: Scores, freq: Scores, topn: int = 5) -> List[Tuple[str, float]]:
+        """
+        Return top-n (word,score) pairs sorted descending by fused score.
+        Ties are kept stable by insertion order of python dicts.
+        """
+        combined = self.fuse(markov, embed, personal, freq)
+        ranked = sorted(combined.items(), key=lambda kv: kv[1], reverse=True)
+        return ranked[:topn]
+
+"""
+
