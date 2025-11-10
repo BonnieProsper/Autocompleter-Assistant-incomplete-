@@ -1,93 +1,146 @@
-# hybrid_predictor.py combines markov + Embeddings + BK-tree fuzzy + personalization
-
+# hybrid_predictor.py
+#
+# Combines:
+# - Markov (syntactic/context)
+# - Embeddings (semantic)
+# - BK-tree (fuzzy)
+# - User personalization (bias + recent context)
+# - FusionRanker for flexible weighting/presets
+#
+# Exposes train/retrain/suggest/accept and simple state save/load hooks.
 
 import time
-from collections import Counter
-from typing import List, Tuple, Iterable
+import pickle
+import math
+from collections import Counter, defaultdict, deque
+from typing import List, Tuple, Dict, Optional
 
 from markov_predictor import MarkovPredictor
 from embeddings import Embeddings
 from context_personal import CtxPersonal
 from semantic_engine import SemanticEngine
-from logger_utils import Log
 from bktree import BKTree
-from fusion_ranker import FusionRanker
+from logger_utils import Log
 
-# create once (reuse) in constructor
-self.rankr = FusionRanker(preset="balanced", personalizer=self.ctx)
+# small local helper types
+Scores = Dict[str, float]
+
+
+class FusionRanker:
+    """Weighted fusion of multiple signal sources into a single ranked list."""
+    PRESETS = {
+        "balanced": {"markov": 0.4, "embed": 0.4, "personal": 0.15, "freq": 0.05},
+        "strict":   {"markov": 0.7, "embed": 0.15, "personal": 0.1,  "freq": 0.05},
+        "personal": {"markov": 0.2, "embed": 0.2,  "personal": 0.55, "freq": 0.05},
+        "semantic": {"markov": 0.1, "embed": 0.75, "personal": 0.1,  "freq": 0.05},
+    }
+
+    def __init__(self, preset: str = "balanced"):
+        self.update_preset(preset)
+
+    def update_preset(self, preset: str):
+        if preset not in self.PRESETS:
+            raise ValueError(f"bad preset '{preset}'")
+        self.preset = preset
+        self.weights = self.PRESETS[preset]
+
+    def fuse(self, markov: Scores, embed: Scores,
+             personal: Scores, freq: Scores) -> Scores:
+        out: Scores = {}
+        all_words = set(markov) | set(embed) | set(personal) | set(freq)
+        for w in all_words:
+            m = markov.get(w, 0.0)
+            e = embed.get(w, 0.0)
+            p = personal.get(w, 0.0)
+            f = freq.get(w, 0.0)
+            score = (self.weights["markov"] * m +
+                     self.weights["embed"] * e +
+                     self.weights["personal"] * p +
+                     self.weights["freq"] * f)
+            out[w] = score
+        return out
+
+    def rank(self, markov: Scores, embed: Scores,
+             personal: Scores, freq: Scores, topn: int = 5) -> List[Tuple[str, float]]:
+        combined = self.fuse(markov, embed, personal, freq)
+        ranked = sorted(combined.items(), key=lambda kv: kv[1], reverse=True)
+        return ranked[:topn]
 
 
 class HybridPredictor:
     """
-    Combine Markov predictions, embedding similarity and fuzzy matches 
-    then bias with per-user preferences.
+    Top-level hybrid predictor.
 
-    Includes (in order):
-      - get markov next-word counts
-      - get embedding-based similar words
-      - merge with weight alpha (0..1), alpha==1 -> embeddings only
-      - add fuzzy matches from BK-tree with adaptive max dist (optional)
-      - boost accepted words and user-preferred words with CtxPersonal
+    Usage pattern:
+      hp = HybridPredictor(user="bonnie")
+      hp.train(lines)            # train from corpus
+      hp.retrain(sentence)       # incremental learning during CLI
+      suggestions = hp.suggest("hello", topn=6)
+      hp.accept("hello")         # user accepted suggestion -> reinforcement
+      hp.save_state(path)        # optional persistence
     """
 
-    def __init__(self, user: str = "default"):
+    def __init__(self, user: str = "default", context_window: int = 2,
+                 bk_cache_ttl: float = 60.0):
         self.mk = MarkovPredictor()
         self.emb = Embeddings()
         self.ctx = CtxPersonal(user)
         self.sem = SemanticEngine()
-
-        self.alpha = 0.5  # markov/embed weight balance (0=markov only)
-        self._trained = False
-
-        # BK-tree for fuzzy queries, synced with training/retrain 
         self.bk = BKTree()
 
-        # counts of accepted suggestions for reinforcement training
-        self.accepted = Counter()
+        self.rank = FusionRanker("balanced")
+        self.alpha = 0.5               # legacy balance (kept for compatibility)
+        self.context_window = max(1, int(context_window))
 
-        # cache for BK queries: key -> (result list), expire after ttl
-        self._bk_cache = {}
-        self._bk_cache_time = {}
-        self._bk_ttl = 60.0  # seconds
+        self._trained = False
+        self.accepted = Counter()      # reinforcement counts
+        self.freq_stats = Counter()    # surface frequency (from training)
 
-    # training ----------------------------------------------------
-    def train(self, lines: Iterable[str]) -> None:
-        """Train from an iterable of sentence strings."""
+        # BK cache for fuzzy queries: (q, maxd) -> [(word, dist), ...]
+        self._bk_cache: Dict[Tuple[str, int], List[Tuple[str, int]]] = {}
+        self._bk_cache_time: Dict[Tuple[str, int], float] = {}
+        self._bk_cache_ttl = float(bk_cache_ttl)
+
+    # ---------------------
+    # Training / updating
+    # ---------------------
+    def train(self, lines: List[str]):
         if not lines:
             return
         with Log.time_block("Hybrid train"):
             for ln in lines:
-                self.mk.train_sentence(ln)
-                self.ctx.learn(ln)
-                # add words to BK for fuzzy matching
-                for tok in self._tokens_from_line(ln):
-                    try:
-                        self.bk.insert(tok)
-                    except Exception:
-                        # ignore odd tokens
-                        pass
+                self._train_line(ln)
             self.ctx.save()
             self._trained = True
 
-    def retrain(self, s: str) -> None:
-        """Online update when user types a new line/from interactive input."""
-        self.mk.train_sentence(s)
-        self.ctx.learn(s)
-        for tok in self._tokens_from_line(s):
+    def retrain(self, sentence: str):
+        self._train_line(sentence)
+        # save small increments; safe and quick
+        try:
+            self.ctx.save()
+        except Exception:
+            pass
+        self._trained = True
+
+    def _train_line(self, ln: str):
+        self.mk.train_sentence(ln)
+        self.ctx.learn(ln)
+        for tok in self._tokens(ln):
+            self.freq_stats[tok] += 1
             try:
                 self.bk.insert(tok)
             except Exception:
+                # ignore malformed token inserts; BK can be finicky
                 pass
-        self.ctx.save()
-        self._trained = True
 
-    # helpers ---------------------------------------------------
-    def _tokens_from_line(self, s: str) -> List[str]:
-        """Return alpha-only tokens in lowercase."""
-        return [t.lower() for t in s.split() if t.isalpha()]
+    # ---------------------
+    # Helpers
+    # ---------------------
+    @staticmethod
+    def _tokens(s: str) -> List[str]:
+        return [t.lower() for t in s.strip().split() if t.isalpha()]
 
-    def _adaptive_max_dist(self, q: str) -> int:
-        """Heuristic, meaning that longer queries allow more edit distance."""
+    def _adaptive_maxd(self, q: str) -> int:
         L = len(q)
         if L <= 3:
             return 0
@@ -97,21 +150,16 @@ class HybridPredictor:
             return 2
         return 3
 
-    def _bk_query_cached(self, q: str, maxd: int) -> List[Tuple[str, int]]:
-        """Cache BK queries for short TTL to avoid repeated work and increase efficiency."""
+    def _bk_query_cached(self, q: str, maxd: int):
         key = (q, maxd)
         now = time.time()
         if key in self._bk_cache:
-            ts = self._bk_cache_time.get(key, 0)
-            if now - ts < self._bk_ttl:
+            if now - self._bk_cache_time.get(key, 0.0) < self._bk_cache_ttl:
                 return self._bk_cache[key]
             # expired
-            try:
-                del self._bk_cache[key]
-                del self._bk_cache_time[key]
-            except KeyError:
-                pass
-        # run query and cache
+            self._bk_cache.pop(key, None)
+            self._bk_cache_time.pop(key, None)
+
         try:
             res = self.bk.query(q, max_dist=maxd)
         except Exception:
@@ -120,110 +168,160 @@ class HybridPredictor:
         self._bk_cache_time[key] = now
         return res
 
-    # suggestion core ---------------------------------------------------
-    def suggest(self, word: str, topn: int = 6) -> List[Tuple[str, float]]:
+    # ---------------------
+    # Main suggestion API
+    # ---------------------
+    def suggest(self, text_fragment: str, topn: int = 6,
+                fuzzy: bool = True) -> List[Tuple[str, float]]:
         """
-        Return list of (word, score) suggestions. Scores are not probabilities but
-        relative values useful for ranking.
+        Provide ranked suggestions for the last token of text_fragment.
+        Returns list of (word, score).
         """
-        q = (word or "").lower().strip()
-        if not q:
+        if not text_fragment:
             return []
 
-        t0 = time.time()
+        start = time.time()
         try:
-            # markov next-word suggestions with contextual frequency
-            m_res = self.mk.top_next(q, topn=topn)
-            m_map = {w: float(sc) for w, sc in m_res}
+            toks = [t.lower() for t in text_fragment.strip().split() if t]
+            if not toks:
+                return []
 
-            # embedding-based preditcions using semantic similarity
-            e_res = self.emb.similar(q, topn=topn)
-            e_map = {w: float(sc) for w, sc in e_res}
+            # use recent token(s)
+            context = toks[-self.context_window:]
+            last = context[-1]
 
-            # merge with weighting: markov*(1-alpha) + emb*alpha
-            merged = Counter()
-            for w, sc in m_map.items():
-                merged[w] += sc * (1.0 - self.alpha)
-            for w, sc in e_map.items():
-                merged[w] += sc * self.alpha
+            # --- Markov suggestions (counts)
+            mk_list = self.mk.top_next(last, topn=topn * 2)
+            markov_scores: Scores = {w: float(s) for w, s in mk_list}
 
-            # use semantic_engine expansion as fallback if merge doesnt work
-            if not merged or len(merged) < topn:
-                try:
-                    sem = self.sem.similar(q, topn=topn)
-                    for w, sc in sem:
-                        merged[w] += float(sc) * 0.35
-                except Exception:
-                    pass
+            # --- Embedding suggestions (similar words)
+            emb_list = self.emb.similar(last, topn=topn * 2) if hasattr(self.emb, "similar") else []
+            embed_scores: Scores = {w: float(s) for w, s in emb_list}
 
-            # Add fuzzy matches from BK-tree using adaptive edit distance
-            maxd = self._adaptive_max_dist(q)
-            if maxd > 0 and getattr(self, "bk", None) is not None:
-                fuzzy = self._bk_query_cached(q, maxd)
-                # fuzzy: list of (word, dist)
-                for w, dist in fuzzy:
-                    # bonus proportional to closeness and penalise larger dist
-                    bonus = max(0.0, (maxd + 1) - dist)
-                    merged[w] += bonus * 0.8
+            # --- Personal scores (from CtxPersonal.freq)
+            personal_scores: Scores = {w: float(self.ctx.freq.get(w, 0)) for w in set(list(markov_scores) + list(embed_scores))}
+            # make sure we include some personal-only candidates (recent)
+            for w in list(self.ctx.recent):
+                personal_scores.setdefault(w, float(self.ctx.freq.get(w, 0)))
 
-            # Accepted suggestions are reinforced
-            for w, cnt in self.accepted.items():
-                merged[w] += cnt * 1.2
+            # --- Frequency stats (global)
+            freq_scores: Scores = {w: float(self.freq_stats.get(w, 0)) for w in set(list(markov_scores) + list(embed_scores) + list(personal_scores))}
 
-            # Convert to list and bias by user preferences
-            ranked = merged.most_common()
+            # --- BK fuzzy fallback (if needed)
+            if fuzzy:
+                maxd = self._adaptive_maxd(last)
+                if maxd > 0:
+                    fuzzy_res = self._bk_query_cached(last, maxd)
+                    # fuzzy_res: (word, dist)
+                    for w, dist in fuzzy_res:
+                        bonus = max(0.0, (maxd + 1) - dist)
+                        # attach to embed scores (small weight)
+                        embed_scores[w] = max(embed_scores.get(w, 0.0), bonus * 0.5)
+
+            # --- Reinforcement: bump accepted words
+            for w, c in self.accepted.items():
+                personal_scores[w] = personal_scores.get(w, 0.0) + math.log1p(c) * 0.4
+
+            # --- Fusion + ranking
+            ranked = self.rank.rank(markov_scores, embed_scores, personal_scores, freq_scores, topn=topn)
+
+            # --- Bias again by CtxPersonal heuristics (keeps instincts)
             ranked = self.ctx.bias_words(ranked)
 
-            # Normalize/truncate, measure time, and return topn
-            out = [(w, round(float(score), 3)) for w, score in ranked[:topn]]
+            # --- final trimming/normalisation
+            out = [(w, round(float(sc), 3)) for w, sc in ranked][:topn]
 
-            Log.metric("Suggest latency", round(time.time() - t0, 3), "s")
+            Log.metric("Suggest latency", round(time.time() - start, 3), "s")
             return out
 
         except Exception as e:
-            Log.write(f"[ERROR] suggest({q}): {e}")
+            Log.write(f"[HybridPredictor] suggest error: {e}")
             return []
 
-        m_res = self.mk.top_next(last_word, topn=10)      # [(w,count), ...]
-        e_res = self.emb.similar(last_word, topn=10)      # [(w,sim), ...]
-        f_res = self._bk_query_cached(last_word, maxd)    # [(w,dist), ...]
-        freq_map = self._word_freq_map()                  # {w:count}
-
-final = self.rankr.rank(markov=m_res,
-                        embeddings=e_res,
-                        fuzzy=f_res,
-                        base_freq=freq_map,
-                        recency_map=self.ctx.get_recency_map(),  # optional
-                        topn=8)
-
-    # reinforcement and tuning -------------------------------------
-    def accept(self, word: str) -> None:
-        """Record that the user accepted this suggestion (boost future ranking)."""
+    # ---------------------
+    # Reinforcement & tuning
+    # ---------------------
+    def accept(self, word: str):
         if not word:
             return
         w = word.lower().strip()
         self.accepted[w] += 1
-        # bound to avoid runaway numbers
-        if self.accepted[w] > 1000:
-            self.accepted[w] = 1000
+        # keep counts bounded
+        if self.accepted[w] > 10_000:
+            self.accepted[w] = 10_000
 
-    def set_balance(self, val: float) -> None:
-        """Set blending weight (0..1) for embeddings vs markov."""
-        try:
-            v = float(val)
-        except Exception:
-            return
-        self.alpha = max(0.0, min(1.0, v))
+    def set_balance(self, val: float):
+        # kept for backwards compatibility — maps roughly to embed vs markov
+        self.alpha = max(0.0, min(1.0, float(val)))
+        # convert to simple preset change if extremes
+        if self.alpha < 0.25:
+            self.rank.update_preset("strict")
+        elif self.alpha > 0.75:
+            self.rank.update_preset("semantic")
+        else:
+            self.rank.update_preset("balanced")
 
-    # small utility for debugging/demo purpose
-    def vocab_size(self) -> int:
-        """Return an estimate of vocab size (BK-tree or markov)."""
+    def set_mode(self, preset: str):
         try:
-            # BK-tree might have method, if so fallback to markov internals
-            if hasattr(self.bk, "size"):
-                return self.bk.size()
-        except Exception:
-            pass
+            self.rank.update_preset(preset)
+        except ValueError:
+            raise
+
+    def set_context_window(self, n: int):
+        self.context_window = max(1, min(8, int(n)))
+
+    # ---------------------
+    # Persistence (optional helpers)
+    # ---------------------
+    def save_state(self, path: str):
+        try:
+            with open(path, "wb") as fh:
+                pickle.dump({
+                    "markov": self.mk,       # these objects are usually pickleable
+                    "ctx": self.ctx,
+                    "bk": self.bk,
+                    "freq": self.freq_stats,
+                    "accepted": self.accepted,
+                    "rank_preset": self.rank.preset,
+                }, fh)
+            Log.write(f"[HybridPredictor] state saved -> {path}")
+        except Exception as e:
+            Log.write(f"[HybridPredictor] save_state failed: {e}")
+
+    def load_state(self, path: str):
+        try:
+            with open(path, "rb") as fh:
+                data = pickle.load(fh)
+            # replace local components if present in the file
+            self.mk = data.get("markov", self.mk)
+            self.ctx = data.get("ctx", self.ctx)
+            self.bk = data.get("bk", self.bk)
+            self.freq_stats = data.get("freq", self.freq_stats)
+            self.accepted = data.get("accepted", self.accepted)
+            preset = data.get("rank_preset")
+            if preset:
+                try:
+                    self.rank.update_preset(preset)
+                except Exception:
+                    pass
+            Log.write(f"[HybridPredictor] state loaded from {path}")
+            self._trained = True
+        except Exception as e:
+            Log.write(f"[HybridPredictor] load_state failed: {e}")
+
+    # ---------------------
+    # Simple inspect/debug helpers
+    # ---------------------
+    def top_freq(self, n: int = 20) -> List[Tuple[str, int]]:
+        return self.freq_stats.most_common(n)
+
+    def stats_summary(self) -> Dict[str, int]:
+        return {
+            "trained": int(bool(self._trained)),
+            "vocab": len(self.freq_stats),
+            "accepted": sum(self.accepted.values()),
+        }
+
         # fallback: count words seen in markov table if accessible
         try:
             # markov predictor stores counts, this is a best-effort estimate
