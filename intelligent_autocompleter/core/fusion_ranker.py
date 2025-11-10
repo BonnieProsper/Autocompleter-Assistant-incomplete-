@@ -10,17 +10,18 @@ Expected input examples:
   - base_freq: dict[word -> integer]
   - optional: recent_ts or last_used map for recency
 
-This ranker normalizes each signal and computes a weighted sum.
+Normalizes each signal and computes a weighted ranking.
 It also supports named presets for quick experimentation purposes.
 """
 
+from __future__ import annotations
 from typing import Dict, Iterable, List, Tuple, Optional
-from collections import defaultdict
+import logging
 import math
 
-# typing alias
+# typing persona/scores 
 CandidateList = List[Tuple[str, float]]
-
+Scores = Dict[str, float]
 
 def _minmax_scale(vals: Iterable[float]) -> List[float]:
     vals = list(vals)
@@ -31,10 +32,14 @@ def _minmax_scale(vals: Iterable[float]) -> List[float]:
         return [1.0 for _ in vals]
     return [(v - lo) / (hi - lo) for v in vals]
 
-
 def _log_plus_one(vals: Iterable[float]) -> List[float]:
+    """Apply log1p and return list."""
     return [math.log1p(max(0.0, v)) for v in vals]
 
+
+def _inv_distance(dist: float) -> float:
+    """Convert edit distance to a similarity score."""
+    return 1.0 / (1.0 + dist)
 
 class FusionRanker:
     """
@@ -42,13 +47,19 @@ class FusionRanker:
 
     Parameters: 
     weights : dict[str, float]
-        Weights for signals. Keys supported: "markov", "embed", "fuzzy",
-        "freq", "recency", "personal".
-    preset : Optional[str]
-        Mode preset -> modifies default weights. One of {"strict","balanced",
-        "creative","personal"}.
-    personalizer : optional object with `.bias_words(list[(w,score)]) -> list[(w,score)]`, 
-    for example the CtxPersonal instance.
+    Weights for each input signal. Keys supported: "markov", "embed", "fuzzy",
+    "freq", "recency", "personal".
+    preset : str, optional
+    
+    Mode preset defines the weighting style, the options are: 
+    strict = heavy markov/structural
+    balanced = even across sources
+    creative = more semantic/embedding based
+    personal = emphasise personalisation
+    
+    personalizer : 
+    optional object with `.bias_words(list[(w,score)]) -> list[(w,score)]`, 
+    usually the CtxPersonal instance.
     """
 
     PRESETS = {
@@ -58,20 +69,23 @@ class FusionRanker:
         "personal": {"markov": 0.25, "embed": 0.25, "fuzzy": 0.1, "freq": 0.15, "personal": 0.25},
     }
 
-    def __init__(self,
-                 weights: Optional[Dict[str, float]] = None,
-                 preset: Optional[str] = "balanced",
-                 personalizer: Optional[object] = None):
+    def __init__(
+      self,
+      weights: Optional[Dict[str, float]] = None,
+      preset: Optional[str] = "balanced",
+      personalizer: Optional[object] = None,
+    ):
         if preset and preset in self.PRESETS:
             base = dict(self.PRESETS[preset])
         else:
-            base = {"markov": 0.4, "embed": 0.3, "fuzzy": 0.1, "freq": 0.15, "personal": 0.05}
+            base = dict(self.PRESETS["balanced"]
         if weights:
             base.update(weights)
         # normalize weights to sum 1
-        s = sum(base.values()) or 1.0
-        self.w = {k: float(v) / s for k, v in base.items()}
+        total = sum(base.values()) or 1.0
+        self.weights = {k: v / total for k, v in base.items()}
         self.personalizer = personalizer
+        self.logger = logging.getLogger(__name__)
 
     # public API --------------------------------------------
     def rank(self,
@@ -83,159 +97,95 @@ class FusionRanker:
              topn: int = 8) -> CandidateList:
         """
         Build a fused ranking from the available signals from different models.
-        Returns top `topn` (word, score) sorted in descending order.
+        Returns a list (word, score) sorted in descending order by final weight.
         """
         # gather candidate set
-        cand_set = set()
         markov = markov or []
         embeddings = embeddings or []
         fuzzy = fuzzy or []
         base_freq = base_freq or {}
         recency_map = recency_map or {}
-        cand_set.update([w for w, _ in markov])
-        cand_set.update([w for w, _ in embeddings])
-        cand_set.update([w for w, _ in fuzzy])
-        cand_set.update(base_freq.keys())
-        if not cand_set:
+        # candidate words
+        candidates = set()
+        for src in (markov, embeddings, fuzzy):
+            candidates.update([w for w, _ in src])
+        candidates.update(base_freq.keys())
+        if not candidates:
             return []
 
-        # arrays for normalization
+        # arrays to normalise each signal
         m_map = {w: c for w, c in markov}
         e_map = {w: s for w, s in embeddings}
         f_map = {w: d for w, d in fuzzy}  # dist -> smaller better
-        freq_map = dict(base_freq)
-        rec_map = dict(recency_map)
 
-        # normalization
-        # markov: counts to logplusone then minmax
-        m_vals = _log_plus_one([m_map.get(w, 0) for w in cand_set])
-        m_norm = dict(zip(list(cand_set), _minmax_scale(m_vals)))
+        # normalization ----------------------------------------------
+        # markov normalisation - counts to logplusone then minmax
+        m_vals = _log_plus_one([m_map.get(w, 0) for w in candidates])
+        m_norm = dict(zip(list(candidates), _minmax_scale(m_vals)))
 
         # embedding - similarity scores then minmax (usually between -1-1 or 0-1)
-        e_vals = [e_map.get(w, 0.0) for w in cand_set]
-        e_norm_vals = _minmax_scale(e_vals)
-        e_norm = dict(zip(list(cand_set), e_norm_vals))
+        e_vals = [e_map.get(w, 0.0) for w in candidates]
+        e_norm = dict(zip(candidates, _minmax_scale(e_vals)))
 
-        # fuzzy: edit distance to convert to similarity penalty (smaller dist is higher)
+        # fuzzy - edit distance to convert to similarity penalty (smaller dist is higher)
         # map dist to score = 1/(1+dist) then minmax
-        f_raw = []
-        for w in cand_set:
-            if w in f_map:
-                f_raw.append(1.0 / (1.0 + float(f_map[w])))
-            else:
-                f_raw.append(0.0)
-        f_norm_vals = _minmax_scale(f_raw)
-        f_norm = dict(zip(list(cand_set), f_norm_vals))
+        f_vals = [_inv_distance(f_map.get(w, 100.0)) for w in candidates]
+        f_norm = dict(zip(candidates, _minmax_scale(f_vals)))
 
-        # base frequency: logplusone then minmax
-        freq_vals = _log_plus_one([freq_map.get(w, 0) for w in cand_set])
-        freq_norm_vals = _minmax_scale(freq_vals)
-        freq_norm = dict(zip(list(cand_set), freq_norm_vals))
+        # base frequency normalisation: logplusone then minmax
+        freq_vals = _log_plus_one([base_freq.get(w, 0) for w in candidates])
+        freq_norm = dict(zip(candidates, _minmax_scale(freq_vals)))
 
-        # Recency: modify timestamps to recency weight, newer is higher.
-        # rec_map value is expected as epoch timestamp so convert it to age
-        rec_raw = []
-        now = None
-        if rec_map:
-            now = max(rec_map.values())
-        for w in cand_set:
-            if w in rec_map and now:
-                age = max(0.0, now - rec_map[w])
-                # convert to recency score: recent -> ~1, old -> ~0
-                rec_raw.append(1.0 / (1.0 + math.log1p(age)))
+        # Recency normalisation: modify timestamps to recency weight, newer is higher.
+        # recency_map value is expected as epoch timestamp so convert it to age
+        now = max(recency_map.values()) if recency_map else None
+        rec_vals = []
+        for w in candidates:
+            if now and w in recency_map:
+                age = max(0.0, now - recency_map[w])
+                rec_vals.append(1.0 / (1.0 + math.log1p(age)))
             else:
-                rec_raw.append(0.0)
-        rec_norm_vals = _minmax_scale(rec_raw)
-        rec_norm = dict(zip(list(cand_set), rec_norm_vals))
+                rec_vals.append(0.0)
+        rec_norm = dict(zip(candidates, _minmax_scale(rec_vals)))
+
 
         # Combine weighted signals --------------------------------------------------
-        scores = {}
-        for w in cand_set:
+        scores: Dict[str, float] = {}
+        for w in candidates:
             s = 0.0
-            s += self.w.get("markov", 0.0) * m_norm.get(w, 0.0)
-            s += self.w.get("embed", 0.0)  * e_norm.get(w, 0.0)
-            s += self.w.get("fuzzy", 0.0)  * f_norm.get(w, 0.0)
-            s += self.w.get("freq", 0.0)   * freq_norm.get(w, 0.0)
-            # personal weight is used via personalizer if present
-            s += self.w.get("personal", 0.0) * (1.0 if self.personalizer is None else 0.0)
-            # recency is combined with 'freq' or considered separately if present
-            s += (self.w.get("recency", 0.0) * rec_norm.get(w, 0.0)) if "recency" in self.w else 0.0
-            scores[w] = float(s)
+            s += self.weights.get("markov", 0) * m_norm.get(w, 0.0)
+            s += self.weights.get("embed", 0) * e_norm.get(w, 0.0)
+            s += self.weights.get("fuzzy", 0) * f_norm.get(w, 0.0)
+            s += self.weights.get("freq", 0) * freq_norm.get(w, 0.0)
+            s += self.weights.get("recency", 0) * rec_norm.get(w, 0.0)
+            scores[w] = s
 
-        # apply personalizer as a post-process if available
-        ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+        # apply personal bias
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         if self.personalizer:
             # personalizer expects list[(word,score)] and returns same form
             ranked = self.personalizer.bias_words(ranked)
 
-        # final stable sort & return
-        ranked = sorted(ranked, key=lambda kv: -kv[1])
-        return [(w, round(float(sc), 4)) for w, sc in ranked[:topn]]
+        # final stable sort to descending order & return
+        ranked = sorted(ranked, key=lambda kv: kv[1], reverse=True)
 
-""" 
-Alternative??
+        # round for readability
+        result = [(w, round(s, 4)) for w, s in ranked[:topn]]
+        self.logger.debug(f"[FusionRanker] Returned {len(result)} candidates.")
+        return result
 
-# fusion_ranker.py
-# fusion ranker for experiments and presets.
-
-from typing import Dict, List, Tuple
-from collections import defaultdict
-
-Scores = Dict[str, float]
-
-
-class FusionRanker:
-    """
-    Lightweight fusion ranker with a few presets.
-    Not fancy — easy to read and tweak.
-    """
-
-    PRESETS = {
-        "balanced": {"markov": 0.4, "embed": 0.4, "personal": 0.15, "freq": 0.05},
-        "strict":   {"markov": 0.7, "embed": 0.15, "personal": 0.1,  "freq": 0.05},
-        "personal": {"markov": 0.2, "embed": 0.2,  "personal": 0.55, "freq": 0.05},
-        "semantic": {"markov": 0.1, "embed": 0.75, "personal": 0.1,  "freq": 0.05},
-    }
-
-    def __init__(self, preset: str = "balanced"):
-        self.update_preset(preset)
+    def explain_weights(self) -> str:
+        """Return formatted summary of current weight configuration."""
+        lines = [f"FusionRanker preset weights:"]
+        for k, v in self.weights.items():
+            lines.append(f"  {k:<10} = {v:.2f}")
+        return "\n".join(lines)
 
     def update_preset(self, preset: str):
+        """Change preset weights dynamically."""
         if preset not in self.PRESETS:
-            raise ValueError(f"unknown preset: {preset!r}")
-        self.preset = preset
-        self.weights = self.PRESETS[preset]
+            raise ValueError(f"Unknown preset: {preset}")
+        self.__init__(preset=preset, personalizer=self.personalizer)
+        self.logger.info(f"[FusionRanker] Updated preset → {preset}")
 
-    def _all_words(self, *score_maps: Scores):
-        s = set()
-        for m in score_maps:
-            s.update(m.keys())
-        return s
-
-    def fuse(self, markov: Scores, embed: Scores,
-             personal: Scores, freq: Scores) -> Scores:
-        out: Scores = {}
-        for w in self._all_words(markov, embed, personal, freq):
-            m = markov.get(w, 0.0)
-            e = embed.get(w, 0.0)
-            p = personal.get(w, 0.0)
-            f = freq.get(w, 0.0)
-            # linear combination — simple and explainable
-            out[w] = (self.weights["markov"] * m +
-                      self.weights["embed"] * e +
-                      self.weights["personal"] * p +
-                      self.weights["freq"] * f)
-        return out
-
-    def rank(self, markov: Scores, embed: Scores,
-             personal: Scores, freq: Scores, topn: int = 5) -> List[Tuple[str, float]]:
-        """
-        Return top-n (word,score) pairs sorted descending by fused score.
-        Ties are kept stable by insertion order of python dicts.
-        """
-        combined = self.fuse(markov, embed, personal, freq)
-        ranked = sorted(combined.items(), key=lambda kv: kv[1], reverse=True)
-        return ranked[:topn]
-
-"""
 
