@@ -172,7 +172,7 @@ class FusionRanker:
         ranked = sorted(ranked, key=lambda kv: -kv[1])
         return [(w, round(float(sc), 4)) for w, sc in ranked[:topn]]
 
-"""
+""" 
 Alternative??
 
 # fusion_ranker.py
