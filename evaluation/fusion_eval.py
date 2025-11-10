@@ -29,7 +29,6 @@ from hybrid_predictor import HybridPredictor
 from fusion_ranker import FusionRanker
 from logger_utils import Log
 
-# -----------------------
 # Config / paths
 # -----------------------
 HERE = os.path.dirname(__file__)
@@ -38,7 +37,6 @@ DATA_PATH = os.path.join(ROOT, "data", "demo_corpus.txt")
 OUT_DIR = os.path.join(HERE, "results")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# -----------------------
 # Utilities / metrics
 # -----------------------
 def load_corpus(path: str) -> List[str]:
@@ -90,11 +88,10 @@ def reciprocal_rank(preds: List[str], gold: str) -> float:
     return 0.0
 
 
-# -----------------------
 # Small experiment runner
 # -----------------------
 def evaluate_presets(
-    hp_ctor,                 # callable that returns a fresh HybridPredictor instance
+    hp_ctor,            # callable that returns a fresh HybridPredictor instance
     presets: List[str],
     train_pairs: List[Tuple[str, str]],
     test_pairs: List[Tuple[str, str]],
@@ -111,10 +108,10 @@ def evaluate_presets(
         print(f"[eval] preset={preset} ...", end=" ", flush=True)
         # build model and set ranker preset
         hp = hp_ctor()
-        # train with sentence-level training; we reconstruct sentences from train_pairs
-        # simpler: collect sentences from pairs grouping by first token -> naive
-        # but HybridPredictor has train(lines) so we need original lines. For simplicity,
-        # we'll train hp by calling retrain on the joined pairs -> crude but works.
+        # train with sentence-level training,  reconstruct sentences from train_pairs
+        # simpler: collect sentences from pairs grouping by first token to naive
+        # HybridPredictor has train(lines) so original lines are needed. 
+        # Train hp by calling retrain on the joined pairs to crude but works for simplicity.
         for a, b in train_pairs:
             # feed as small sentence 'a b' to learn Markov counts
             hp.retrain(f"{a} {b}")
@@ -126,7 +123,7 @@ def evaluate_presets(
             if hasattr(hp, "ranker"):
                 hp.ranker.update_preset(preset)
             else:
-                # try to create one and attach (best-effort)
+                # try to create one and attach 
                 hp.ranker = FusionRanker(preset=preset, personalizer=hp.ctx if hasattr(hp, "ctx") else None)
         except Exception as e:
             Log.write(f"[warn] could not configure preset {preset}: {e}")
@@ -136,7 +133,7 @@ def evaluate_presets(
         prec = {k: 0 for k in k_list}
         mrr_sum = 0.0
         for prev, gold in test_pairs:
-            # ask model for suggestions for prev; model may expect a fragment; try both
+            # ask model for suggestions for prev, model may expect a fragment, try both
             out = hp.suggest(prev, topn=topn)
             # hp.suggest commonly returns list of (word, score) or list of words.
             if not out:
@@ -165,7 +162,6 @@ def evaluate_presets(
     return results
 
 
-# -----------------------
 # Report helpers
 # -----------------------
 def write_report(results: Dict[str, Dict], outdir: str):
@@ -187,7 +183,6 @@ def write_report(results: Dict[str, Dict], outdir: str):
     print(f"[report] wrote {md_path} and {json_path}")
 
 
-# -----------------------
 # Main
 # -----------------------
 def main():
