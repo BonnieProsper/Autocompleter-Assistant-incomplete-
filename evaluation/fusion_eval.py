@@ -1,4 +1,4 @@
-# evaluation/eval_fusion.py
+# evaluation/fusion_eval.py
 """
 Small evaluation harness for FusionRanker + HybridPredictor.
 
@@ -12,7 +12,7 @@ What it does (simple, reproducible):
  - Write a short markdown and JSON summary under evaluation/results/
 
 to run use:
-    python evaluation/eval_fusion.py
+    python evaluation/fusion_eval.py
 """
 
 from __future__ import annotations
