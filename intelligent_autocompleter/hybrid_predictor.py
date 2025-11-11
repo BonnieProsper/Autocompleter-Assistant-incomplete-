@@ -22,6 +22,9 @@ from semantic_engine import SemanticEngine
 from bktree import BKTree
 from logger_utils import Log
 
+from intelligent_autocompleter.core.fusion_ranker import FusionRanker
+self.ranker = FusionRanker(preset="balanced", personalizer=self.ctx)
+
 # small local helper types
 Scores = Dict[str, float]
 
