@@ -1,316 +1,349 @@
-# cli.py — command line interface for user interaction, commands, integrates the hybrid prediction system.
+# cli.py — command line interface for user interaction, commands, 
+# integrates the hybrid prediction system,
+# uses Rich for styling, session analytics, and adaptive assistance
 
-import sys
-import shlex 
-import time 
 import os
+import sys
+import shlex
+import time
 import pickle
 import json
 from random import choice
+from typing import Optional, List
+
+# ui styling with Rich
+from rich.console import Console
+from rich.prompt import Prompt
+from rich.table import Table
+from rich.text import Text
+from rich.panel import Panel
+from rich import box
 
 from hybrid_predictor import HybridPredictor
 from config_manager import Config
 from metrics_tracker import Metrics
 from logger_utils import Log
 
-# logging config support from logging_config.yaml file, is optional
-import logging.config, yaml, os
-cfg_path = os.path.join(os.path.dirname(__file__), "utils", "logging_config.yaml")
-if os.path.exists(cfg_path):
-    with open(cfg_path, "r") as fh:
-        conf = yaml.safe_load(fh)
-    logging.config.dictConfig(conf)
-logger = logging.getLogger("intelligent_autocompleter")
-logger.info("Logging configured from YAML")
-
-
-
-# Initialise constants/paths --------------------
+# Paths setup ----------------------------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
-DEFAULT_CORPUS = os.path.join(DATA_DIR, "demo_corpus.txt")
 MODEL_PATH = os.path.join(DATA_DIR, "model_state.pkl")
+DEFAULT_CORPUS = os.path.join(DATA_DIR, "demo_corpus.txt")
 
-BANNER = "Smart Text Assistant (type /help for commands)"
+console = Console()
+BANNER = "[bold cyan]Smart Text Assistant[/bold cyan] — type [yellow]/help[/yellow] for commands."
 
+# Command Line Interface logic ---------------------------------
 class CLI:
     def __init__(self):
-        # Initialize logging first, so all other subsystems can use it
-        self.log = Log
-        self.log.info("=== Smart Text Assistant started ===")
-
-        # Initialize core modules
         self.hp = HybridPredictor()
         self.cfg = Config()
         self.metrics = Metrics()
-        self.running = True
+        self.log = Log
+        self.session_active = False
+        self.session_buf: List[str] = []
+        self.history: List[str] = []
+        self._load_state(quiet=True)
+        self.log.write("CLI initialized")
 
-        # Load existing model if present
-        self._load_state()
-
-    # Main interactive loop -----------------
+    # main REPL loop -------------------------------
+    # waits for user input then responds
     def start(self):
-        print(BANNER)
-        self.log.write("CLI session started.")
-        while self.running:
+        console.rule("[bold magenta]Smart Text Assistant[/bold magenta]")
+        console.print(BANNER)
+        while True:
             try:
-                line = input(">> ").strip()
+                line = Prompt.ask("[green]>>[/green]").strip()
             except (EOFError, KeyboardInterrupt):
-                print("\nbye.")
-                self.log.write("Session ended by user.")
+                console.print("\n[red]Exiting gracefully...[/red]")
                 self._save_state()
                 break
-            
+
             if not line:
-                continue
+                continue # ignore empty input
+            self.history.append(line)
 
-            if line.startswith("/"):
-                self.cmd(line)
+            if line.startswith("/"): # all commands start with '/'
+                self._handle_command(line)
             else:
-                t0 = time.perf_counter()
-                self.hp.retrain(line)
-                dt = time.perf_counter() - t0
-                self.metrics.record("train_time", dt)
-                self.log.debug(f"Retrained with line '{line}' in {dt:.3f}s.")
-                print(f"Learnt: ({dt*1000:.1f} ms)")
+                self._train_line(line)
 
-    # Command processor ----------------------
-    def cmd(self, line):
-        p = shlex.split(line)
-        if not p:
-            return
-        cmd = p[0].lower()
-
-        if cmd in ("/q", "/quit", "/exit"):
-            self._save_state()
-            self.running = False
-            print("bye.")
-            self.log.write("Exited normally.")
-            return
-
-        if cmd == "/help":
-            print("Commands:")
-            print("  /suggest <word>    : show predictions")
-            print("  /train <file>      : train from file")
-            print("  /bal <value>       : adjust balance")
-            print("  /config [key val]  : view/set config")
-            print("  /stats             : show performance metrics")
-            print("  /bench             : benchmark suggestion speed")
-            print("  /export <file>     : export data summary")
-            print("  /quit              : exit program")
-            print("  /ctx               : show context")
-            print("  /forget            : Clear memory")
-            print("  /whoami            : Show user history/context")
-            print("  /mode              : Change fusion mode")
-            return
-
-        if cmd == "/suggest" and len(p) > 1:
-            self._suggest(p[1])
-            return
-
-        if cmd == "/train" and len(p) > 1:
-            self.train_file(p[1])
-            return
-
-        if cmd == "/bal" and len(p) > 1:
-            try:
-                val = float(p[1])
-                self.hp.set_balance(val)
-                self.cfg.data["balance"] = val
-                self.cfg.save()
-                print("balance=", self.hp.alpha)
-                self.log.write(f"Balance set to {val}")
-            except ValueError:
-                print("bad val")
-                self.log.write(f"Invalid balance value: {p[1]}")
-            return
-
-        if cmd == "/config":
-            if len(p) == 1:
-                self.cfg.show()
-            elif len(p) == 3:
-                self.cfg.set(p[1], p[2])
-                self.log.write(f"Config updated: {p[1]}={p[2]}")
-            else:
-                print("usage: /config [key val]")
-            return
-
-        if cmd == "/stats":
-            self.metrics.show()
-            return
-
-        if cmd == "/bench":
-            self._bench()
-            return
-
-        if cmd == "/export" and len(p) > 1:
-            self.export_data(p[1])
-            return
-
-        if cmd == "/ctx" and len(p) > 1:
-            try:
-                n = int(p[1])
-                self.hp.set_context_window(n)
-                print(f"context window = {n}")
-                self.log.info(f"Context window updated to {n}")
-            except ValueError:
-                print("usage: /ctx <int>")
-
-        if cmd == "/forget":
-            self.hp.ctx.reset()
-            print("personal memory cleared")
-            self.log.info("User context reset.")
-            return
-
-        if cmd == "/whoami":
-            print("Current user:", self.hp.ctx.user)
-            print("Learned words:", len(self.hp.ctx.freq))
-            self.log.info(f"User context inspected: {self.hp.ctx.user}")
-            return
-
-        elif cmd == "/mode":
-            _, preset = cmd.split(maxsplit=1)
-            try:
-                predictor.set_mode(preset)
-                print(f"Fusion mode switched to '{preset}'.")
-            except ValueError:
-                print("Invalid mode. Try: balanced, strict, personal, neutral.")
-
-
-
-
-        print("unknown cmd")
-        self.log.write(f"Unknown command: {cmd}")
-
-    # Suggestion helper -----------------
-    def _suggest(self, word):
+    # training line fed into model by user, for learning purposes (not demo corpus)
+    def _train_line(self, text: str):
         t0 = time.perf_counter()
-        out = self.hp.suggest(word)
+        self.hp.retrain(text)
+        dt = time.perf_counter() - t0
+        self.metrics.record("train_time", dt)
+        if self.session_active:
+            self.session_buf.append(text)
+        console.print(f"[magenta]Learned in {dt*1000:.1f} ms[/magenta]")
+
+    # interpret and execute commands
+    def _handle_command(self, raw: str):
+        parts = shlex.split(raw)
+        if not parts:
+            return
+        cmd = parts[0].lower()
+
+        # match commands, including possible shortcuts
+        match cmd:
+            case "/q" | "/quit" | "/exit":
+                self._save_state()
+                console.print("[bold red]Bye![/bold red]")
+                sys.exit(0)
+
+            case "/help":
+                self._show_help()
+
+            case "/suggest":
+                if len(parts) < 2:
+                    console.print("Usage: /suggest <fragment>")
+                    return
+                self._suggest(" ".join(parts[1:]))
+
+            case "/compose":
+                self._compose_mode()
+
+            case "/train":
+                if len(parts) < 2:
+                    console.print("Usage: /train <file>")
+                    return
+                self._train_file(parts[1])
+
+            case "/session":
+                self._handle_session(parts[1:])
+
+            case "/config":
+                self._handle_config(parts[1:])
+
+            case "/stats":
+                self.metrics.show()
+
+            case "/bench":
+                self._bench()
+
+            case "/recall":
+                self._recall_last()
+
+            case "/save":
+                self._save_state()
+
+            case "/load":
+                self._load_state()
+
+            case _:
+                console.print(f"[red]Unknown command:[/red] {cmd}")
+
+    # generate suggestions for text 
+    def _suggest(self, frag: str):
+        t0 = time.perf_counter()
+        suggestions = self.hp.suggest(frag)
         dt = time.perf_counter() - t0
         self.metrics.record("suggest_time", dt)
-        if not out:
-            print("(no suggestion)")
-            self.log.write(f"No suggestions for '{word}'")
+
+        if not suggestions:
+            console.print("[dim](no suggestions)[/dim]")
             return
 
-        # give numbered choices and allow user to accept them
-        print("\nSuggestions:")
-        for i, (s, sc) in enumerate(out, start=1):
-            print(f"  {i}. {s} (score {sc:.3f})")
-        print("  0. none / type another word")
+        # Rich table for nicer output (tbd)
+        table = Table(title="Suggestions", box=box.SIMPLE, show_edge=False)
+        table.add_column("#", justify="right", style="cyan")
+        table.add_column("Word", style="bold")
+        table.add_column("Score", justify="right", style="magenta")
+        for i, (word, score) in enumerate(suggestions[:5], 1):
+            table.add_row(str(i), word, f"{score:.3f}")
+        console.print(table)
 
-        choice = input("Pick [num / word / Enter]: ").strip()
-        if not choice:
+        # user can accept/add own word
+        choice_input = Prompt.ask("Pick number / type word / Enter to skip", default="")
+        if not choice_input:
             return
-        if choice.isdigit():
-            idx = int(choice)
-            if idx == 0:
-                return
-            if 1 <= idx <= len(out):
-                chosen = out[idx - 1][0]
+        if choice_input.isdigit():
+            # accept predicted suggestion
+            idx = int(choice_input)
+            if 1 <= idx <= len(suggestions):
+                chosen = suggestions[idx - 1][0]
                 self.hp.accept(chosen)
                 self._save_state()
-                print(f"Accepted '{chosen}'")
-                self.log.write(f"User accepted suggestion '{chosen}'")
-                return
-            else:
-                print("bad number")
-                return
-        # typed word selection
-        chosen = choice.lower().strip()
-        # if typed matches suggestion accept it
-        if any(chosen == s for s, _ in out):
-            self.hp.accept(chosen)
-            self._save_state()
-            print(f"Accepted '{chosen}'")
-            self.log.write(f"User accepted suggestion '{chosen}'")
+                console.print(f"[green]Accepted:[/green] {chosen}")
         else:
-            # treat as new word, retrain/add it
-            self.hp.retrain(chosen)
+            # user adds word
+            word = choice_input.strip().lower()
+            self.hp.retrain(word)
             self._save_state()
-            print(f"Added '{chosen}' to model")
-            self.log.write(f"User added new word '{chosen}'")
+            console.print(f"[cyan]Added:[/cyan] {word}")
 
-    # Train using file -----------------
-    def train_file(self, path):
+    # interactive mode, live hints while typing
+    def _compose_mode(self):
+        console.rule("[yellow]Compose Mode[/yellow]")
+        buf = []
+        while True:
+            raw = Prompt.ask("[blue]Compose[/blue]", default="").strip()
+            if raw in ("/done", "/exit"):
+                break
+            # quick accept best suggestion for last word
+            if raw == "/accept" and buf:
+                last = buf[-1]
+                suggs = self.hp.suggest(last)
+                if suggs:
+                    chosen = suggs[0][0]
+                    buf[-1] = chosen
+                    self.hp.retrain(chosen)
+                    console.print(f"[green]Accepted:[/green] {chosen}")
+                continue
+            if not raw:
+                continue
+                
+            # update sentence buffer
+            buf.extend(raw.split())
+            # display live hints
+            last = buf[-1]
+            hints = self.hp.suggest(last)
+            if hints:
+                hint_text = ", ".join(f"{w} ({s:.2f})" for w, s in hints[:3])
+                console.print(f"[cyan][hint][/cyan] {hint_text}")
+
+        # save final text
+        sentence = " ".join(buf)
+        if sentence:
+            self.hp.retrain(sentence)
+            if self.session_active:
+                self.session_buf.append(sentence)
+            console.print(f"[magenta]Saved sentence:[/magenta] {sentence}")
+        console.rule("[dim]Compose Ended[/dim]")
+
+    # train model using text file (e.g demo_corpus.txt)
+    def _train_file(self, path: str):
+        path = os.path.expanduser(path)
+        if not os.path.exists(path):
+            console.print(f"[red]File not found:[/red] {path}")
+            return
+        with open(path, "r", encoding="utf8") as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+        t0 = time.perf_counter()
+        self.hp.train(lines)
+        dt = time.perf_counter() - t0
+        self.metrics.record("train_file_time", dt)
+        self._save_state()
+        console.print(f"[green]Trained on {len(lines)} lines in {dt:.2f}s[/green]")
+
+    # Session management ----------------------------------
+    # start, end, save ongoing learning sessions
+    def _handle_session(self, args: List[str]):
+        if not args:
+            console.print("Usage: /session start|end|save <file>")
+            return
+        sub = args[0].lower()
+        match sub:
+            case "start":
+                self.session_active = True
+                self.session_buf = []
+                console.print("[green]Session started[/green]")
+            case "end":
+                if not self.session_active:
+                    console.print("[yellow]No active session[/yellow]")
+                    return
+                self.session_active = False
+                n = len(self.session_buf)
+                console.print(f"[cyan]Session ended ({n} entries)[/cyan]")
+                if n > 0:
+                    self.hp.train(self.session_buf)
+                    self._save_state()
+                    self.session_buf = []
+            case "save":
+                if len(args) < 2:
+                    console.print("Usage: /session save <file>")
+                    return
+                self._session_save(args[1])
+
+    # save session buffer to file
+    def _session_save(self, path: str):
         try:
-            # expand paths
-            path = os.path.expanduser(path)
-            with open(path, "r", encoding="utf8") as f:
-                lines = [ln.strip() for ln in f if ln.strip()]
-            t0 = time.perf_counter()
-            self.hp.train(lines)
-            dt = time.perf_counter() - t0
-            self.metrics.record("train_file_time", dt)
-            print(f"trained on {len(lines)} lines in {dt:.2f}s")
-            self._save_state()
-            self.log.write(f"Trained from file {path} ({len(lines)} lines, {dt:.2f}s)")
+            with open(path, "w", encoding="utf8") as fh:
+                for s in self.session_buf:
+                    fh.write(s + "\n")
+            console.print(f"[green]Session saved -> {path}[/green]")
         except Exception as e:
-            print("Error:", e)
-            self.log.write(f"Failed to train from {path}: {e}")
+            console.print(f"[red]Failed to save session:[/red] {e}")
 
-    # Benchmark -------------------------------
+    # Configuration handler --------------------------------------
+    # view and change settings
+    def _handle_config(self, args: List[str]):
+        if not args:
+            self.cfg.show()
+            return
+        if len(args) == 2:
+            k, v = args
+            self.cfg.set(k, v)
+            self.cfg.save()
+            console.print(f"[cyan]Config updated:[/cyan] {k}={v}")
+        else:
+            console.print("Usage: /config [key val]")
+
+    # Utility commands -----------------------------------------------
+    # recall, benchmark, stats
+    def _recall_last(self):
+        if not self.history:
+            console.print("[dim]No previous input[/dim]")
+            return
+        last = self.history[-1]
+        console.print(f"[yellow]Last command:[/yellow] {last}")
+
+    # benchmark to test suggestion speed
     def _bench(self):
-        words = ["the", "hello", "world", "this", "that", "there", "good"]
+        words = ["the", "this", "hello", "assistant", "python", "good"]
         t0 = time.perf_counter()
         for _ in range(100):
             self.hp.suggest(choice(words))
         dt = time.perf_counter() - t0
-        avg = dt / 100
-        print(f"bench: {avg:.5f}s avg per suggest")
-        self.log.info(f"Benchmark completed: {avg:.5f}s avg")
+        console.print(f"[cyan]Benchmark avg: {dt/100:.5f}s per suggest[/cyan]")
 
-    # export data ----------------------------
-    def export_data(self, path):
-        data = {
-            "config": self.cfg.data,
-            "metrics": {k: self.metrics.avg(k) for k in self.metrics.m},
-        }
-        try:
-            with open(path, "w", encoding="utf8") as f:
-                json.dump(data, f, indent=2)
-            print("exported to", path)
-            self.log.write(f"Exported summary to {path}")
-        except Exception as e:
-            print("export error:", e)
-            self.log.error(f"Export failed: {e}")
-
-    # State management -------------------------------------
+    # Persistence ----------------------------------------------------------
+    # to save and load model state
     def _save_state(self):
         try:
             os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
             with open(MODEL_PATH, "wb") as f:
                 pickle.dump(self.hp, f)
-            print("[saved model state]")
-            self.log.write("Model state saved successfully.")
+            console.print("[green]Model saved.[/green]")
         except Exception as e:
-            print("[warn] could not save model:", e)
-            self.log.write(f"Model save failed: {e}")
+            console.print(f"[red]Save failed:[/red] {e}")
+            self.log.write(f"Save failed: {e}")
 
-    def _load_state(self):
+    def _load_state(self, quiet: bool = False):
         if os.path.exists(MODEL_PATH):
             try:
-                with open(MODEL_PATH, "rb") as f: 
+                with open(MODEL_PATH, "rb") as f:
                     self.hp = pickle.load(f)
-                print(f"[loaded existing model: {MODEL_PATH}]")
-                self.log.info("Model loaded successfully.")
+                if not quiet:
+                    console.print("[green]Loaded existing model.[/green]")
             except Exception as e:
-                print("[warn] could not load model:", e)
-                self.log.write(f"Model load failed: {e}")
+                console.print(f"[red]Load failed:[/red] {e}")
+                self.log.write(f"Load failed: {e}")
         elif os.path.exists(DEFAULT_CORPUS):
-            print(f"[AutoTrain] Loading corpus: {DEFAULT_CORPUS}")
-            try:
-                self.train_file(DEFAULT_CORPUS)
-                print("[AutoTrain] Training complete.\n")
-                self.log.write("Auto-trained from default corpus.")
-            except Exception as e:
-                print("[AutoTrain] Skipped due to error:", e)
-                self.log.write(f"AutoTrain failed: {e}")
+            console.print(f"[yellow]Autotrain: using default corpus...[/yellow]")
+            self._train_file(DEFAULT_CORPUS)
         else:
-            print(f"[AutoTrain] No corpus found at {DEFAULT_CORPUS}")
-            self.log.write("No default corpus found for AutoTrain.")
+            console.print("[dim]No saved model or corpus found.[/dim]")
 
+    # Help Display -----------------------------------------------------
+    # list of all commands
+    def _show_help(self):
+        help_text = Table(title="Available Commands", box=box.MINIMAL_DOUBLE_HEAD)
+        help_text.add_column("Command", style="cyan", no_wrap=True)
+        help_text.add_column("Description", style="white")
+        help_text.add_row("/suggest <frag>", "Show predictions for a fragment")
+        help_text.add_row("/compose", "Enter interactive writing mode")
+        help_text.add_row("/train <file>", "Train model on file")
+        help_text.add_row("/session start|end|save", "Manage user sessions")
+        help_text.add_row("/config [key val]", "View or set configuration")
+        help_text.add_row("/recall", "Show last entered command")
+        help_text.add_row("/bench", "Run performance benchmark")
+        help_text.add_row("/stats", "Display runtime metrics")
+        help_text.add_row("/quit", "Exit the program")
+        console.print(help_text)
 
 if __name__ == "__main__":
     CLI().start()
+
 
