@@ -21,6 +21,7 @@ from context_personal import CtxPersonal
 from semantic_engine import SemanticEngine
 from bktree import BKTree
 from logger_utils import Log
+from feedback_tracker import FeedbackTracker
 
 from fusion_ranker import FusionRanker
 
@@ -40,6 +41,7 @@ class FusionRanker:
 
     def __init__(self, preset: str = "balanced"):
         self.update_preset(preset)
+        self.feedback = FeedbackTracker()
 
     def update_preset(self, preset: str):
         if preset not in self.PRESETS:
@@ -237,19 +239,29 @@ class HybridPredictor:
             Log.metric("Suggest latency", round(time.time() - start, 3), "s")
             return out
 
+    	    # Apply adaptive bias based on past user feedback
+            for i, (w, score) in enumerate(suggestions):
+                ratio = self.feedback.acceptance_ratio(w)
+                suggestions[i] = (w, score * (0.9 + ratio * 0.2))  # 0.9–1.1 multiplier
+
+            # self.feedback.record(context_word, top_suggestion, accepted=None) - could include
+            
             markov = m_res            # keep as list[(word,count)]
             embeds = e_res            # list[(word,score)]
             fuzzy = fuzzy_results     # list[(word,dist)]  - you already get from BK or semantic fallback
             base_freq = {w: self.ctx.freq.get(w, 0) for w, _ in markov}  # or your trie frequencies
             recency_map = {}  # if you track last_used timestamps per word
 
-final = self.ranker.rank(markov=markov,
+            final = self.ranker.rank(markov=markov,
                          embeddings=embeds,
                          fuzzy=fuzzy,
                          base_freq=base_freq,
                          recency_map=recency_map,
                          topn=topn)
-return final
+            return final
+
+            
+
 
         except Exception as e:
             Log.write(f"[HybridPredictor] suggest error: {e}")
