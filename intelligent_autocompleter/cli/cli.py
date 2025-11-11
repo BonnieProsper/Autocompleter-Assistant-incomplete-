@@ -290,7 +290,7 @@ class CLI:
     def _load_state(self):
         if os.path.exists(MODEL_PATH):
             try:
-                with open(MODEL_PATH, "rb") as f:
+                with open(MODEL_PATH, "rb") as f: 
                     self.hp = pickle.load(f)
                 print(f"[loaded existing model: {MODEL_PATH}]")
                 self.log.info("Model loaded successfully.")
