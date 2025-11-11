@@ -22,8 +22,8 @@ from semantic_engine import SemanticEngine
 from bktree import BKTree
 from logger_utils import Log
 
-from intelligent_autocompleter.core.fusion_ranker import FusionRanker
-self.ranker = FusionRanker(preset="balanced", personalizer=self.ctx)
+from fusion_ranker import FusionRanker
+
 
 # small local helper types
 Scores = Dict[str, float]
@@ -91,7 +91,7 @@ class HybridPredictor:
         self.sem = SemanticEngine()
         self.bk = BKTree()
 
-        self.rank = FusionRanker("balanced")
+        self.ranker = FusionRanker(preset="balanced", personalizer=self.ctx)
         self.alpha = 0.5               # legacy balance (kept for compatibility)
         self.context_window = max(1, int(context_window))
 
