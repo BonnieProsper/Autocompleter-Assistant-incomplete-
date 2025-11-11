@@ -193,6 +193,19 @@ class CLI:
                 continue
             if not raw:
                 continue
+
+            """ To include??:
+            if len(buf) > 1:
+            prev = buf[-2]
+            suggs = self.hp.suggest(prev)
+            if suggs:
+                top = suggs[0][0]
+                # If user types smth other than top suggestion treat as reject
+                if tok.lower() != top.lower():
+                    self.hp.feedback.record(context=prev, suggestion=top, accepted=False)
+                    self.hp.feedback.save()
+
+            """
                 
             # update sentence buffer
             buf.extend(raw.split())
