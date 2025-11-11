@@ -237,6 +237,20 @@ class HybridPredictor:
             Log.metric("Suggest latency", round(time.time() - start, 3), "s")
             return out
 
+            markov = m_res            # keep as list[(word,count)]
+            embeds = e_res            # list[(word,score)]
+            fuzzy = fuzzy_results     # list[(word,dist)]  - you already get from BK or semantic fallback
+            base_freq = {w: self.ctx.freq.get(w, 0) for w, _ in markov}  # or your trie frequencies
+            recency_map = {}  # if you track last_used timestamps per word
+
+final = self.ranker.rank(markov=markov,
+                         embeddings=embeds,
+                         fuzzy=fuzzy,
+                         base_freq=base_freq,
+                         recency_map=recency_map,
+                         topn=topn)
+return final
+
         except Exception as e:
             Log.write(f"[HybridPredictor] suggest error: {e}")
             return []
