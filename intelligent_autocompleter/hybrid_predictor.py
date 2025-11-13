@@ -51,7 +51,7 @@ class HybridPredictor:
         self._trained = False # flag to show whether model is trained
 
     # Training and incremental updates --------------------------------------------------------
-    def train(self, corpus: List[str]):
+    def train(self, corpus: List[str]): 
         """
         Train the model using a provided corpus of text (demo_copus.txt).
         Args:
