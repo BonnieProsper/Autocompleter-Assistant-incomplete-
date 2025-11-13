@@ -10,6 +10,12 @@ import pickle
 import json
 from random import choice
 from typing import Optional, List
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich.prompt import Prompt
+from rich import box
 
 # ui styling with Rich
 from rich.console import Console
