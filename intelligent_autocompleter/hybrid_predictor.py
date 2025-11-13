@@ -50,8 +50,7 @@ class HybridPredictor:
         self.session_context = deque(maxlen=20) # stores recent context for session based predictions
         self._trained = False # flag to show whether model is trained
 
-    # Training and incremental updates
-    # ------------------------------------------------------------------
+    # Training and incremental updates --------------------------------------------------------
     def train(self, corpus: List[str]):
         """
         Train the model using a provided corpus of text (demo_copus.txt).
@@ -94,8 +93,7 @@ class HybridPredictor:
             except Exception:
                 pass
 
-    # Suggestion engine
-    # ------------------------------------------------------------------
+    # Suggestion engine ------------------------------------------------------------
     def suggest(self, fragment: str, topn: int = 6, fuzzy: bool = True) -> List[Tuple[str, float]]:
         """
         Generate a list of word suggestions based on the provided text fragment.
@@ -152,8 +150,7 @@ class HybridPredictor:
             Log.write(f"[HybridPredictor] suggest error: {e}")
             return []
 
-    # Adaptive feedback and learning
-    # ------------------------------------------------------------------
+    # Adaptive feedback and learning ----------------------------------------------------------
     def accept(self, word: str):
         """
         Called when a user accepts or confirms a suggestion.
@@ -192,8 +189,7 @@ class HybridPredictor:
             adjusted.append((w, round(score * multiplier, 4))) # apply multiplier to score
         return adjusted
 
-    # Helpers and diagnostics
-    # ------------------------------------------------------------------
+    # Helpers and diagnostics --------------------------------------------------------
     @staticmethod
     def _adaptive_maxd(word: str) -> int:
         """
@@ -227,8 +223,7 @@ class HybridPredictor:
             "fused": dict(sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[:topn]),
         }
 
-    # Persistence
-    # ------------------------------------------------------------------
+    # Persistence-----------------------------------------------------------
     def save_state(self, path: str):
         """
         Save the model and its state to a file for later use.
@@ -275,8 +270,7 @@ class HybridPredictor:
         except Exception as e:
             Log.write(f"[HybridPredictor] load_state failed: {e}")
 
-    # Reporting
-    # ------------------------------------------------------------------
+    # Reporting --------------------------------------------------------
     def summary(self) -> Dict[str, object]:
         return {
             "user": self.user,
