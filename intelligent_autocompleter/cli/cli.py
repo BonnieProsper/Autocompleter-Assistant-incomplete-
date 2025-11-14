@@ -47,11 +47,11 @@ class CLI:
         - Loads previous session data
         """
         self.hp = HybridPredictor()
-        self.ctx = CtxPersonal()
+        self.context = CtxPersonal()
         self.metrics = Metrics()
         self.cfg = Config()
         self.session_data = []
-        self.active = True
+        self.running = True
         self._load_state()
 
     def run(self):
@@ -65,29 +65,29 @@ class CLI:
         console.print("[cyan]Type sentences with live suggestions. Use [yellow]#comment[/yellow] to add notes.[/cyan]")
         console.print("Press [bold]/quit[/bold] to exit.\n")
 
-        # run loop as long as CLI is active
-        while self.active:
+        # run loop as long as CLI is running
+        while self.running:
             try:
                 # prompt user for input (suggestions shown as they type)
-                fragment = Prompt.ask("[green]You[/green]", default="")
-                if not fragment: # if no input continue to next iteration
+                user_input = Prompt.ask("[green]You[/green]", default="")
+                if not user_input: # if no input continue to next iteration
                     continue
-                if fragment.startswith("/quit"):
+                if user_input.startswith("/quit"):
                     self._exit()
                     break
-                if fragment.startswith("/save"):
+                if user_input.startswith("/save"):
                     self._save_state()
                     continue
                 # process users input with autocompletion
-                self._process_input(fragment)
+                self._process_input(user_input)
             except (EOFError, KeyboardInterrupt):
                 self._exit()
                 break
 
     # Core input processing + live suggestion handling --------------------------
-    def process_input(self, fragment: str):
+    def process_input(self, user_input: str):
         """
-        Process the user's input fragment:
+        Process the user's input user_input:
         - Generate autocompletion suggestions
         - Accept user selection or allow custom input
         - Record session data and trigger autosave
@@ -95,12 +95,12 @@ class CLI:
         start_time = time.perf_counter()
 
         # Handle inline comments
-        if fragment.startswith("#"):
-            self._add_comment(fragment)
+        if user_input.startswith("#"):
+            self._add_comment(user_input)
             return
 
         # get autocompletion suggestions from HybridPredictor
-        suggestions = self.hp.suggest(fragment)
+        suggestions = self.hp.suggest(user_input)
         self.metrics.record("suggest_time", time.perf_counter() - start_time) # record time for stats
         if not suggestions:
             console.print("[dim](no suggestions)[/dim]")
@@ -117,14 +117,14 @@ class CLI:
             word, _ = suggestions[int(chosen) - 1]
             console.print(f"[green]Accepted:[/green] {word}")
             self.hp.accept(word)
-            self.ctx.learn(word) # learn for future predictions
-            self.session_data.append({"input": fragment, "accepted": word})
+            self.context.learn(word) # learn for future predictions
+            self.session_data.append({"input": user_input, "accepted": word})
         else:
             # custom word/retrain model
             custom = chosen.strip()
             self.hp.retrain(custom)
             console.print(f"[cyan]Added custom:[/cyan] {custom}")
-            self.session_data.append({"input": fragment, "custom": custom})
+            self.session_data.append({"input": user_input, "custom": custom})
 
         self._autosave() # autosave after processing input
 
@@ -149,7 +149,7 @@ class CLI:
         - Magenta for title-case words (names, etc.)
         - Yellow as the fallback color
         """
-        if word in self.ctx.freq:
+        if word in self.context.freq:
             return "green"     # personal vocabulary
         if word.isalpha() and len(word) <= 4:
             return "cyan"      # short/contextual
@@ -220,7 +220,7 @@ class CLI:
         self._save_state()
         summary = self._session_summary()
         console.print(summary)
-        self.active = False
+        self.running = False
 
     def session_summary(self):
         """
@@ -231,7 +231,7 @@ class CLI:
         """
         total_inputs = len([x for x in self.session_data if "input" in x])
         total_comments = len([x for x in self.session_data if "comment" in x])
-        top_words = sorted(self.ctx.freq.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        top_words = sorted(self.context.freq.items(), key=lambda kv: kv[1], reverse=True)[:5]
         summary = Table(title="Session Summary", box=box.MINIMAL)
         summary.add_column("Metric", style="cyan")
         summary.add_column("Value", style="white")
