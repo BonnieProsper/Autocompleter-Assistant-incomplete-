@@ -85,7 +85,7 @@ class CLI:
                 break
 
     # Core input processing + live suggestion handling --------------------------
-    def _process_input(self, fragment: str):
+    def process_input(self, fragment: str):
         """
         Process the user's input fragment:
         - Generate autocompletion suggestions
@@ -128,7 +128,7 @@ class CLI:
 
         self._autosave() # autosave after processing input
 
-    def _display_suggestions(self, suggestions):
+    def display_suggestions(self, suggestions):
         """
         Display the autocompletion suggestions in a color-coded table.
         Each suggestion is ranked and color-coded based on its relevance.
@@ -142,7 +142,7 @@ class CLI:
             table.add_row(str(i), Text(word, style=style), f"{score:.3f}")
         console.print(table)
 
-    def _color_for_word(self, word):
+    def color_for_word(self, word):
         """Assign a color to each word based on semantic categories.
         - Green for personal vocabulary (frequent words)
         - Cyan for short words
@@ -157,7 +157,7 @@ class CLI:
             return "magenta"   # semantic
         return "yellow"        # fallback or mixed
 
-    def _add_comment(self, comment):
+    def add_comment(self, comment):
         """
         Handle comments entered by the user, for interactive note taking.
         Prints the comment in the console and adds it to session data.
@@ -168,12 +168,12 @@ class CLI:
         self._autosave()
 
     # Persistence: model + session memory---------------------------------------------
-    def _autosave(self):
+    def autosave(self):
         """Automatically save session data every 5 entries."""
         if len(self.session_data) % 5 == 0:
             self._save_state(quiet=True)
 
-    def _save_state(self, quiet=False):
+    def save_state(self, quiet=False):
         """
         Save the current model state and session data to disk.
         - Model state is saved with pickle.
@@ -191,7 +191,7 @@ class CLI:
             console.print(f"[red]Save failed:[/red] {e}")
             Log.write(f"[ERROR] Save: {e}")
 
-    def _load_state(self):
+    def load_state(self):
         """
         Load the saved model and session state from disk.
         If no state exists then skip loading.
@@ -211,7 +211,7 @@ class CLI:
             except Exception:
                 pass
 
-    def _exit(self):
+    def exit_session(self):
         """
         Exit CLI program cleanly.
         Save current state and print a session summary.
@@ -222,7 +222,7 @@ class CLI:
         console.print(summary)
         self.active = False
 
-    def _session_summary(self):
+    def session_summary(self):
         """
         Create and return a summary table (Rich table) of the current session. Including:
         - Total number of user inputs
