@@ -1,0 +1,29 @@
+#left {
+    height: 100%;
+    padding: 1 2;
+}
+
+#right {
+    height: 100%;
+    padding: 1 2;
+    border-left: solid #333;
+}
+
+#bottom {
+    height: 3;
+    padding: 0 2;
+    background: $panel;
+}
+
+#text_input {
+    margin-bottom: 1;
+}
+
+#predictions {
+    padding: 1;
+}
+
+#context {
+    padding: 1;
+    border-top: solid #333;
+}
