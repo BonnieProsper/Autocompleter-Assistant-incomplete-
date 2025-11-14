@@ -222,8 +222,13 @@ class CLI:
         console.print(summary)
         self.active = False
 
-    # Simple analytics panel for the session ----------------------------------------------------
     def _session_summary(self):
+        """
+        Create and return a summary table (Rich table) of the current session. Including:
+        - Total number of user inputs
+        - Number of comments added
+        - The user's top-used 5 most used words (from personal context learning)
+        """
         total_inputs = len([x for x in self.session_data if "input" in x])
         total_comments = len([x for x in self.session_data if "comment" in x])
         top_words = sorted(self.ctx.freq.items(), key=lambda kv: kv[1], reverse=True)[:5]
