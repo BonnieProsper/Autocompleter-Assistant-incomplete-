@@ -28,13 +28,24 @@ from intelligent_autocompleter.utils.metrics_tracker import Metrics
 from intelligent_autocompleter.utils.config_manager import Config
 from intelligent_autocompleter.core.context_personal import CtxPersonal
 
+# initialise console for rich output
 console = Console()
+
+# initialise file paths
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 MODEL_PATH = os.path.join(DATA_DIR, "model_state.pkl")
 SESSION_PATH = os.path.join(DATA_DIR, "session_state.json")
 
 class CLI:
+    """Command-line interface (CLI) class to manage user interaction, autocompletion, and session persistence."""
     def __init__(self):
+        """
+        Initialize the CLI assistant:
+        - Loads the HybridPredictor model
+        - Sets up context (user-specific data)
+        - Initializes metrics tracking
+        - Loads previous session data
+        """
         self.hp = HybridPredictor()
         self.ctx = CtxPersonal()
         self.metrics = Metrics()
