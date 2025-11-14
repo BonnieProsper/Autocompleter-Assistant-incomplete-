@@ -39,7 +39,7 @@ class HybridPredictor:
         self.markov = MarkovPredictor()
         self.emb = Embeddings()
         self.bk = BKTree()
-        self.ctx = CtxPersonal(user) # personal context for bias and user preference
+        self.context = CtxPersonal(user) # personal context for bias and user preference
         self.sem = SemanticEngine()
         self.rank = FusionRanker(preset="balanced") # initialise to balanced weight for fusion
         self.feedback = FeedbackTracker()
@@ -64,7 +64,7 @@ class HybridPredictor:
         with Log.time_block("HybridPredictor.train"): # log training time
             for line in corpus:
                 self._train_line(line) # process each line in corpus
-        self.ctx.save() # save learned context (user specific knowledge)
+        self.context.save() # save learned context (user specific knowledge)
         self._trained = True
         Log.write("[HybridPredictor] training complete.")
 
@@ -75,7 +75,7 @@ class HybridPredictor:
         - sentence: The new sentence to add to the model's knowledge.
         """
         self._train_line(sentence) # train on new sentence incrimentally
-        self.ctx.save() # update and save context
+        self.context.save() # update and save context
 
     def _train_line(self, text: str):
         """
@@ -85,7 +85,7 @@ class HybridPredictor:
         """
         tokens = [t.lower() for t in text.strip().split() if t.isalpha()] # tokenise, make lowercase
         self.markov.train_sentence(text) # train markov model with sentence
-        self.ctx.learn(text) # learn user context from sentence
+        self.context.learn(text) # learn user context from sentence
         for t in tokens:
             self.freq_stats[t] += 1 # update word frequency
             try:
@@ -120,7 +120,7 @@ class HybridPredictor:
             # Core signal sources: combine different model outputs
             markov_scores = {w: float(s) for w, s in self.markov.top_next(last, topn=topn * 2)}
             embed_scores = {w: float(s) for w, s in self.emb.similar(last, topn=topn * 2)} if hasattr(self.emb, "similar") else {}
-            personal_scores = {w: float(self.ctx.freq.get(w, 0)) for w in set(markov_scores) | set(embed_scores)}
+            personal_scores = {w: float(self.context.freq.get(w, 0)) for w in set(markov_scores) | set(embed_scores)}
             freq_scores = {w: float(self.freq_stats.get(w, 0)) for w in set(markov_scores) | set(embed_scores) | set(personal_scores)}
 
             # Optional fuzzy match using BK tree
@@ -211,7 +211,7 @@ class HybridPredictor:
         last = toks[-1]
         mk = dict(self.markov.top_next(last, topn=topn))
         emb = dict(self.emb.similar(last, topn=topn)) if hasattr(self.emb, "similar") else {}
-        per = {w: self.ctx.freq.get(w, 0) for w in set(mk) | set(emb)}
+        per = {w: self.context.freq.get(w, 0) for w in set(mk) | set(emb)}
         freq = {w: self.freq_stats.get(w, 0) for w in set(mk) | set(emb) | set(per)}
         fused = self.rank.fuse(mk, emb, per, freq)
 
@@ -232,7 +232,7 @@ class HybridPredictor:
         """
         data = {
             "markov": self.markov,
-            "ctx": self.ctx,
+            "context": self.context,
             "bk": self.bk,
             "freq": self.freq_stats,
             "accepted": self.accepted,
@@ -258,7 +258,7 @@ class HybridPredictor:
             with open(path, "rb") as fh:
                 data = pickle.load(fh)
             self.markov = data.get("markov", self.markov)
-            self.ctx = data.get("ctx", self.ctx)
+            self.context = data.get("context", self.context)
             self.bk = data.get("bk", self.bk)
             self.freq_stats = data.get("freq", self.freq_stats)
             self.accepted = data.get("accepted", self.accepted)
