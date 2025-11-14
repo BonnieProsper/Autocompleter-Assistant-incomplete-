@@ -69,25 +69,25 @@ class CLI:
         while self.running:
             try:
                 # prompt user for input (suggestions shown as they type)
-                user_input = Prompt.ask("[green]You[/green]", default="")
-                if not user_input: # if no input continue to next iteration
+                fragment = Prompt.ask("[green]You[/green]", default="")
+                if not fragment: # if no input continue to next iteration
                     continue
-                if user_input.startswith("/quit"):
+                if fragment.startswith("/quit"):
                     self._exit()
                     break
-                if user_input.startswith("/save"):
+                if fragment.startswith("/save"):
                     self._save_state()
                     continue
                 # process users input with autocompletion
-                self._process_input(user_input)
+                self._process_input(fragment)
             except (EOFError, KeyboardInterrupt):
                 self._exit()
                 break
 
     # Core input processing + live suggestion handling --------------------------
-    def process_input(self, user_input: str):
+    def process_input(self, fragment: str):
         """
-        Process the user's input user_input:
+        Process the user's input fragment:
         - Generate autocompletion suggestions
         - Accept user selection or allow custom input
         - Record session data and trigger autosave
@@ -95,12 +95,12 @@ class CLI:
         start_time = time.perf_counter()
 
         # Handle inline comments
-        if user_input.startswith("#"):
-            self._add_comment(user_input)
+        if fragment.startswith("#"):
+            self._add_comment(fragment)
             return
 
         # get autocompletion suggestions from HybridPredictor
-        suggestions = self.hp.suggest(user_input)
+        suggestions = self.hp.suggest(fragment)
         self.metrics.record("suggest_time", time.perf_counter() - start_time) # record time for stats
         if not suggestions:
             console.print("[dim](no suggestions)[/dim]")
@@ -118,13 +118,13 @@ class CLI:
             console.print(f"[green]Accepted:[/green] {word}")
             self.hp.accept(word)
             self.context.learn(word) # learn for future predictions
-            self.session_data.append({"input": user_input, "accepted": word})
+            self.session_data.append({"input": fragment, "accepted": word})
         else:
             # custom word/retrain model
             custom = chosen.strip()
             self.hp.retrain(custom)
             console.print(f"[cyan]Added custom:[/cyan] {custom}")
-            self.session_data.append({"input": user_input, "custom": custom})
+            self.session_data.append({"input": fragment, "custom": custom})
 
         self._autosave() # autosave after processing input
 
