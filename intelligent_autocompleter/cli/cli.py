@@ -54,16 +54,23 @@ class CLI:
         self.active = True
         self._load_state()
 
-    # Main interactive loop ----------------------------------------------------
     def run(self):
+        """
+        Main interactive loop of CLI:
+        - Prompts the user for input.
+        - Handles commands like /quit, /save.
+        - Processes user input with autocompletion suggestions.
+        """
         console.rule("[bold magenta]Intelligent Autocompleter[/bold magenta]")
         console.print("[cyan]Type sentences with live suggestions. Use [yellow]#comment[/yellow] to add notes.[/cyan]")
         console.print("Press [bold]/quit[/bold] to exit.\n")
 
+        # run loop as long as CLI is active
         while self.active:
             try:
+                # prompt user for input (suggestions shown as they type)
                 fragment = Prompt.ask("[green]You[/green]", default="")
-                if not fragment:
+                if not fragment: # if no input continue to next iteration
                     continue
                 if fragment.startswith("/quit"):
                     self._exit()
@@ -71,6 +78,7 @@ class CLI:
                 if fragment.startswith("/save"):
                     self._save_state()
                     continue
+                # process users input with autocompletion
                 self._process_input(fragment)
             except (EOFError, KeyboardInterrupt):
                 self._exit()
@@ -78,40 +86,53 @@ class CLI:
 
     # Core input processing + live suggestion handling --------------------------
     def _process_input(self, fragment: str):
+        """
+        Process the user's input fragment:
+        - Generate autocompletion suggestions
+        - Accept user selection or allow custom input
+        - Record session data and trigger autosave
+        """
         start_time = time.perf_counter()
 
         # Handle inline comments
         if fragment.startswith("#"):
             self._add_comment(fragment)
             return
-            
+
+        # get autocompletion suggestions from HybridPredictor
         suggestions = self.hp.suggest(fragment)
-        self.metrics.record("suggest_time", time.perf_counter() - start_time)
+        self.metrics.record("suggest_time", time.perf_counter() - start_time) # record time for stats
         if not suggestions:
             console.print("[dim](no suggestions)[/dim]")
             return
-        self._display_suggestions(suggestions)
+        self._display_suggestions(suggestions) # display colour coded table of suggestions
 
+        # prompt user to select suggestion/custom word
         chosen = Prompt.ask("Pick number / type override / Enter to skip", default="")
         if not chosen:
             return
 
+        # accept suggestion word corresponding to number
         if chosen.isdigit() and 1 <= int(chosen) <= len(suggestions):
             word, _ = suggestions[int(chosen) - 1]
             console.print(f"[green]Accepted:[/green] {word}")
             self.hp.accept(word)
-            self.ctx.learn(word)
+            self.ctx.learn(word) # learn for future predictions
             self.session_data.append({"input": fragment, "accepted": word})
         else:
+            # custom word/retrain model
             custom = chosen.strip()
             self.hp.retrain(custom)
             console.print(f"[cyan]Added custom:[/cyan] {custom}")
             self.session_data.append({"input": fragment, "custom": custom})
 
-        self._autosave()
+        self._autosave() # autosave after processing input
 
-    # Display suggestions in color-coded Rich table ---------------------------------------------
     def _display_suggestions(self, suggestions):
+        """
+        Display the autocompletion suggestions in a color-coded table.
+        Each suggestion is ranked and color-coded based on its relevance.
+        """
         table = Table(title="Predictions", box=box.SIMPLE, show_edge=False)
         table.add_column("#", justify="right", style="cyan")
         table.add_column("Word", style="bold")
@@ -122,7 +143,12 @@ class CLI:
         console.print(table)
 
     def _color_for_word(self, word):
-        """Assigns consistent semantic color categories."""
+        """Assign a color to each word based on semantic categories.
+        - Green for personal vocabulary (frequent words)
+        - Cyan for short words
+        - Magenta for title-case words (names, etc.)
+        - Yellow as the fallback color
+        """
         if word in self.ctx.freq:
             return "green"     # personal vocabulary
         if word.isalpha() and len(word) <= 4:
@@ -131,8 +157,11 @@ class CLI:
             return "magenta"   # semantic
         return "yellow"        # fallback or mixed
 
-    # Comment handling (for interactive note-taking)---------------------------------
     def _add_comment(self, comment):
+        """
+        Handle comments entered by the user, for interactive note taking.
+        Prints the comment in the console and adds it to session data.
+        """
         note = comment.lstrip("#").strip()
         console.print(f"[dim italic]Comment:[/dim italic] {note}")
         self.session_data.append({"comment": note})
@@ -140,10 +169,16 @@ class CLI:
 
     # Persistence: model + session memory---------------------------------------------
     def _autosave(self):
+        """Automatically save session data every 5 entries."""
         if len(self.session_data) % 5 == 0:
             self._save_state(quiet=True)
 
     def _save_state(self, quiet=False):
+        """
+        Save the current model state and session data to disk.
+        - Model state is saved with pickle.
+        - Session state is saved as a JSON file.
+        """
         os.makedirs(DATA_DIR, exist_ok=True)
         try:
             with open(MODEL_PATH, "wb") as f:
@@ -157,6 +192,10 @@ class CLI:
             Log.write(f"[ERROR] Save: {e}")
 
     def _load_state(self):
+        """
+        Load the saved model and session state from disk.
+        If no state exists then skip loading.
+        """
         if os.path.exists(MODEL_PATH):
             try:
                 with open(MODEL_PATH, "rb") as f:
@@ -173,6 +212,10 @@ class CLI:
                 pass
 
     def _exit(self):
+        """
+        Exit CLI program cleanly.
+        Save current state and print a session summary.
+        """
         console.rule("[red]Exiting...[/red]")
         self._save_state()
         summary = self._session_summary()
