@@ -23,7 +23,6 @@ from intelligent_autocompleter.core.fusion_ranker import FusionRanker
 from intelligent_autocompleter.utils.logger_utils import Log
 from intelligent_autocompleter.core.adaptive_learner import AdaptiveLearner
 
-
 Scores = Dict[str, float]
 
 class HybridPredictor:
@@ -45,12 +44,13 @@ class HybridPredictor:
         self.sem = SemanticEngine()
         self.rank = FusionRanker(preset="balanced") # initialise to balanced weight for fusion
         self.feedback = FeedbackTracker()
+        self.learner = AdaptiveLearner()
 
         # initialise state tracking objects
         self.accepted = Counter() # tracks accepted suggestions
         self.freq_stats = Counter() # tracks word frequencies
         self.session_context = deque(maxlen=20) # stores recent context for session based predictions
-        self._trained = False # flag to show whether model is trained
+        self.trained = False # flag to show whether model is trained
 
     # Training and incremental updates --------------------------------------------------------
     def train(self, corpus: List[str]): 
@@ -65,9 +65,9 @@ class HybridPredictor:
 
         with Log.time_block("HybridPredictor.train"): # log training time
             for line in corpus:
-                self._train_line(line) # process each line in corpus
+                self.train_line(line) # process each line in corpus
         self.context.save() # save learned context (user specific knowledge)
-        self._trained = True
+        self.trained = True
         Log.write("[HybridPredictor] training complete.")
 
     def retrain(self, sentence: str):
@@ -76,10 +76,10 @@ class HybridPredictor:
         Args:
         - sentence: The new sentence to add to the model's knowledge.
         """
-        self._train_line(sentence) # train on new sentence incrimentally
+        self.train_line(sentence) # train on new sentence incrimentally
         self.context.save() # update and save context
 
-    def _train_line(self, text: str):
+    def train_line(self, text: str):
         """
         Train the model on a single line of text by processing tokens and updating various components.
         Args:
@@ -127,7 +127,7 @@ class HybridPredictor:
 
             # Optional fuzzy match using BK tree
             if fuzzy:
-                maxd = self._adaptive_maxd(last)
+                maxd = self.adaptive_maxd(last)
                 for w, dist in self.bk.query(last, max_dist=maxd):
                     bonus = max(0.0, (maxd + 1 - dist)) * 0.4
                     embed_scores[w] = max(embed_scores.get(w, 0.0), bonus)
@@ -142,7 +142,7 @@ class HybridPredictor:
             )
 
             # Adaptive bias based on feedback for personalised ranking
-            ranked = self._apply_feedback_bias(ranked, last)
+            ranked = self.apply_feedback_bias(ranked, last)
 
             # Log latency for performance tracking
             Log.metric("suggest_latency", round(time.time() - start, 3), "s")
@@ -162,9 +162,11 @@ class HybridPredictor:
         w = word.lower().strip()
         self.accepted[w] += 1 # increase acceptance count for word by 1
         self.feedback.record_accept(w) # record acceptance in feedback tracker
+        self.learner.reward(source="semantic")
 
         # Adjust ranker dynamically based on ongoing feedback trend
         self.rank.autotune(self.feedback.trends())
+        self.learner.reinforce_category("git")
 
     def reject(self, word: str):
         """
@@ -174,8 +176,9 @@ class HybridPredictor:
         """
         w = word.lower().strip()
         self.feedback.record_reject(w)
+        self.learner.penalize(source="markov")
 
-    def _apply_feedback_bias(self, ranked: List[Tuple[str, float]], last_word: str) -> List[Tuple[str, float]]:
+    def apply_feedback_bias(self, ranked: List[Tuple[str, float]], last_word: str) -> List[Tuple[str, float]]:
         """
         Adjust scores using feedback-based multipliers for personalized ranking.
         Args:
@@ -193,7 +196,7 @@ class HybridPredictor:
 
     # Helpers and diagnostics --------------------------------------------------------
     @staticmethod
-    def _adaptive_maxd(word: str) -> int:
+    def adaptive_maxd(word: str) -> int:
         """
         Determine the maximum allowable distance for fuzzy matching based on session context.
         Args:
@@ -216,6 +219,9 @@ class HybridPredictor:
         per = {w: self.context.freq.get(w, 0) for w in set(mk) | set(emb)}
         freq = {w: self.freq_stats.get(w, 0) for w in set(mk) | set(emb) | set(per)}
         fused = self.rank.fuse(mk, emb, per, freq)
+        fusion = FusionRanker(weights=self.learner.get_weights())
+        ranked = fusion.rank(candidates)
+
 
         return {
             "markov": mk,
@@ -267,7 +273,7 @@ class HybridPredictor:
             self.feedback.data = data.get("feedback", self.feedback.data)
             if preset := data.get("rank_preset"):
                 self.rank.update_preset(preset)
-            self._trained = True
+            self.trained = True
             Log.write(f"[HybridPredictor] state loaded from {path}")
         except Exception as e:
             Log.write(f"[HybridPredictor] load_state failed: {e}")
