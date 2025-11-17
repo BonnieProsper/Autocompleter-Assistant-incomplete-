@@ -5,7 +5,7 @@
 # - BK-tree (fuzz matchingy)
 # - User personalization (bias + recent context, CtxPersonal)
 # - FusionRanker (adaptive weighting/presets)
-# Exposes methods for training, retraining, suggestion generation, acceptance/rejection feedback, and state persistence.
+# Methods for training, retraining, suggestion generation, acceptance/rejection feedback, and state persistence.
 
 import time
 import math
@@ -21,6 +21,8 @@ from intelligent_autocompleter.core.feedback_tracker import FeedbackTracker
 from intelligent_autocompleter.context_personal import CtxPersonal
 from intelligent_autocompleter.core.fusion_ranker import FusionRanker
 from intelligent_autocompleter.utils.logger_utils import Log
+from intelligent_autocompleter.core.adaptive_learner import AdaptiveLearner
+
 
 Scores = Dict[str, float]
 
