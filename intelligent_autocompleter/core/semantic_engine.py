@@ -30,7 +30,6 @@ class AdaptiveLearner:
             "boosts": {},              # category specific reinforcement boosts
             "history_len": 0           # reserved for future usage if needed
         }
-
         self.save(default_profile)
         return default_profile
 
@@ -86,7 +85,7 @@ class AdaptiveLearner:
         for key in ["semantic_weight", "markov_weight", "personal_weight", "plugin_weight"]:
             self.profile[key] /= total
 
-    # Accessors ---------------------------------------------------------------
+    # Public Accessors ---------------------------------------------------------------
     def get_weights(self):
         """Returns the normalized weights for each prediction source."""
         return {
