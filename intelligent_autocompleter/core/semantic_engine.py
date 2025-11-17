@@ -1,91 +1,100 @@
-# semantic_engine.py - semantic suggestion engine using pretrained embeddings
-# tries gensim first then spaCy
+import json
+import os
+from typing import Dict, Optional
 
-import os, math, logging
-from typing import List, Tuple
+class AdaptiveLearner:
+    """
+    Learns from user behavior by tracking which prediction sources perform well.
+    It rewards sources that lead to correct predictions, penalizes those that don’t,
+    and keeps the internal weighting system balanced over time.
+    """
+    def __init__(self, path="userdata/learning_profile.json"):
+        self.path = path
+        self.profile = self.load_or_init()
 
-try:
-    from gensim.models import KeyedVectors
-    _GENSIM = True
-except ImportError:
-    _GENSIM = False
+    # Profile Loading -----------------------------------------------------
+    def load_or_init(self) -> Dict:
+        """
+        Loads the learning profile from disk if it exists.
+        Otherwise, creates a default profile and saves it.
+        """
+        if os.path.exists(self.path):
+            with open(self.path, "r", encoding="utf-8") as f:
+                return json.load(f)
 
-try:
-    import spacy
-    _SPACY = True
-except ImportError:
-    _SPACY = False
+        default_profile = {
+            "semantic_weight": 0.50,
+            "markov_weight": 0.30,
+            "personal_weight": 0.15,
+            "plugin_weight": 0.05,
+            "boosts": {},              # category specific reinforcement boosts
+            "history_len": 0           # reserved for future usage if needed
+        }
 
+        self.save(default_profile)
+        return default_profile
 
-class SemanticEngine:
-    # semantic word suggestion engine
-    def __init__(self, model_path: str = None):
-        self.model = None
-        self.backend = None
-        if model_path and _GENSIM:
-            self._load_gensim(model_path)
-        elif _SPACY:
-            self._load_spacy()
-        else:
-            logging.warning("No semantic model available. Install gensim or spacy.")
+    def save(self, data):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
 
-    def _load_gensim(self, path: str):
-        if not os.path.exists(path):
-            logging.warning(f"Model not found at {path}")
+    # Update weight factors --------------------------------------------------
+    def reward(self, source: str, amount: float = 0.03):
+        """
+        Increases the weight for a prediction source that performed well.
+        """
+        key = f"{source}_weight"
+        if key in self.profile:
+            self.profile[key] = min(1.0, self.profile[key] + amount)
+            self.normalize()
+            self.save(self.profile)
+
+    def penalize(self, source: str, amount: float = 0.03):
+        """
+        Decreases the weight for a prediction source that performed poorly.
+        """
+        key = f"{source}_weight"
+        if key in self.profile:
+            self.profile[key] = max(0.0, self.profile[key] - amount)
+            self.normalize()
+            self.save(self.profile)
+
+    # Category Reinforcement ---------------------------------------
+    def reinforce_category(self, category: str, delta: float = 0.02):
+        """
+        Applies a small persistent boost to a given command category.
+        Useful for learning frequent user patterns (e.g prefers docker commands).
+        """
+        self.profile["boosts"][category] = self.profile["boosts"].get(category, 0.0) + delta
+        self.save(self.profile)
+
+    # Normalize Weights  -----------------------------------------------------
+    def normalize(self):
+        """
+        Ensures all source weights sum to 1, prevents runaway values
+        and keeps the decision system balanced.
+        """
+        total = (
+            self.profile["semantic_weight"]
+            + self.profile["markov_weight"]
+            + self.profile["personal_weight"]
+            + self.profile["plugin_weight"]
+        )
+        if total == 0:
             return
-        try:
-            self.model = KeyedVectors.load_word2vec_format(path, binary=True)
-            self.backend = "gensim"
-            logging.info(f"Loaded gensim model from {path}")
-        except Exception as e:
-            logging.warning(f"Failed to load gensim model: {e}")
 
-    def _load_spacy(self):
-        #load spacy model
-        for name in ("en_core_web_md", "en_core_web_lg", "en_core_web_sm"):
-            try:
-                self.model = spacy.load(name)
-                self.backend = "spacy"
-                logging.info(f"Using spaCy model: {name}")
-                return
-            except Exception:
-                continue
-        logging.warning("No usable spaCy model found.")
+        for key in ["semantic_weight", "markov_weight", "personal_weight", "plugin_weight"]:
+            self.profile[key] /= total
 
-    def similar(self, word: str, topn: int = 5) -> List[Tuple[str, float]]:
-        # return list of semantically similar words
-        if not self.model:
-            return []
+    # Accessors ---------------------------------------------------------------
+    def get_weights(self):
+        """Returns the normalized weights for each prediction source."""
+        return {
+            "semantic": self.profile["semantic_weight"],
+            "markov": self.profile["markov_weight"],
+            "personal": self.profile["personal_weight"],
+            "plugin": self.profile["plugin_weight"],
+        }
 
-        elif self.backend == "gensim":
-            if word not in self.model.key_to_index:
-                return []
-            sims = self.model.most_similar(word, topn=topn)
-            return [(w, float(s)) for w, s in sims]
-
-        elif self.backend == "spacy":
-            tok = self.model.vocab.get(word)
-            if not tok or not tok.has_vector:
-                return []
-            vec = tok.vector
-            out = []
-            for lex in self.model.vocab:
-                if lex.is_alpha and lex.has_vector:
-                    sim = self._cos(vec, lex.vector)
-                    if sim > 0.4:  # cutoff
-                        out.append((lex.text, sim))
-            out.sort(key=lambda x: -x[1])
-            return out[:topn]
-
-        else:
-            return []
-
-    @staticmethod
-    def _cos(a, b):
-        # find cosine similarity between 2 vectors
-        num = sum(x * y for x, y in zip(a, b))
-        ma = math.sqrt(sum(x * x for x in a))
-        mb = math.sqrt(sum(y * y for y in b))
-        if not ma or not mb:
-            return 0.0
-        return num / (ma * mb)
+    def category_boost(self, category: str) -> float:
+        return self.profile["boosts"].get(category, 0.0)
