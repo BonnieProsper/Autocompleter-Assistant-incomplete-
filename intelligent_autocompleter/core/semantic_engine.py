@@ -1,99 +1,93 @@
-import json
+# intelligent_autocompleter/core/semantic_engine.py
 import os
-from typing import Dict, Optional
+import pickle
+from typing import List, Tuple
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 
-class AdaptiveLearner:
+class SemanticEngine:
     """
-    Learns from user behavior by tracking which prediction sources perform well.
-    It rewards sources that lead to correct predictions, penalizes those that don’t,
-    and keeps the internal weighting system balanced over time.
+    Local semantic engine that performs:
+    - vector embedding
+    - semantic search
+    - intent classification (rule-augmented)
+    - next-command prediction
     """
-    def __init__(self, path="userdata/learning_profile.json"):
-        self.path = path
-        self.profile = self.load_or_init()
+    def __init__(self, store_path: str = "cli/memory/vector_store.pkl"):
+        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.store_path = store_path
+        self.store = self._load_store()
 
-    # Profile Loading -----------------------------------------------------
-    def load_or_init(self) -> Dict:
-        """
-        Loads the learning profile from disk if it exists.
-        Otherwise, creates a default profile and saves it.
-        """
-        if os.path.exists(self.path):
-            with open(self.path, "r", encoding="utf-8") as f:
-                return json.load(f)
+    # ------------------------------
+    # Store Management
+    # ------------------------------
+    def _load_store(self):
+        if os.path.exists(self.store_path):
+            with open(self.store_path, "rb") as f:
+                return pickle.load(f)
+        return {"entries": [], "vectors": []}
 
-        default_profile = {
-            "semantic_weight": 0.50,
-            "markov_weight": 0.30,
-            "personal_weight": 0.15,
-            "plugin_weight": 0.05,
-            "boosts": {},              # category specific reinforcement boosts
-            "history_len": 0           # reserved for future usage if needed
-        }
-        self.save(default_profile)
-        return default_profile
+    def save(self):
+        with open(self.store_path, "wb") as f:
+            pickle.dump(self.store, f)
 
-    def save(self, data):
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+    # ------------------------------
+    # Ingest New Knowledge
+    # ------------------------------
+    def add_entry(self, text: str):
+        self.store["entries"].append(text)
+        vec = self.model.encode([text])[0]
+        self.store["vectors"].append(vec)
+        self.save()
 
-    # Update weight factors --------------------------------------------------
-    def reward(self, source: str, amount: float = 0.03):
-        """
-        Increases the weight for a prediction source that performed well.
-        """
-        key = f"{source}_weight"
-        if key in self.profile:
-            self.profile[key] = min(1.0, self.profile[key] + amount)
-            self.normalize()
-            self.save(self.profile)
+    # ------------------------------
+    # Semantic Search
+    # ------------------------------
+    def search(self, query: str, k=3) -> List[Tuple[str, float]]:
+        if not self.store["entries"]:
+            return []
 
-    def penalize(self, source: str, amount: float = 0.03):
-        """
-        Decreases the weight for a prediction source that performed poorly.
-        """
-        key = f"{source}_weight"
-        if key in self.profile:
-            self.profile[key] = max(0.0, self.profile[key] - amount)
-            self.normalize()
-            self.save(self.profile)
+        query_vec = self.model.encode([query])[0]
+        sims = cosine_similarity([query_vec], self.store["vectors"])[0]
+        top_indices = sims.argsort()[::-1][:k]
 
-    # Category Reinforcement ---------------------------------------
-    def reinforce_category(self, category: str, delta: float = 0.02):
-        """
-        Applies a small persistent boost to a given command category.
-        Useful for learning frequent user patterns (e.g prefers docker commands).
-        """
-        self.profile["boosts"][category] = self.profile["boosts"].get(category, 0.0) + delta
-        self.save(self.profile)
+        return [(self.store["entries"][i], float(sims[i])) for i in top_indices]
 
-    # Normalize Weights  -----------------------------------------------------
-    def normalize(self):
-        """
-        Ensures all source weights sum to 1, prevents runaway values
-        and keeps the decision system balanced.
-        """
-        total = (
-            self.profile["semantic_weight"]
-            + self.profile["markov_weight"]
-            + self.profile["personal_weight"]
-            + self.profile["plugin_weight"]
-        )
-        if total == 0:
-            return
+    # ------------------------------
+    # Intent Classification
+    # ------------------------------
+    def infer_intent(self, text: str):
+        text_l = text.lower()
 
-        for key in ["semantic_weight", "markov_weight", "personal_weight", "plugin_weight"]:
-            self.profile[key] /= total
+        if any(x in text_l for x in ["push", "upload", "send"]); 
+            return "git_push"
 
-    # Public Accessors ---------------------------------------------------------------
-    def get_weights(self):
-        """Returns the normalized weights for each prediction source."""
-        return {
-            "semantic": self.profile["semantic_weight"],
-            "markov": self.profile["markov_weight"],
-            "personal": self.profile["personal_weight"],
-            "plugin": self.profile["plugin_weight"],
-        }
+        if "kill" in text_l or "stop process" in text_l:
+            return "kill_process"
 
-    def category_boost(self, category: str) -> float:
-        return self.profile["boosts"].get(category, 0.0)
+        if "list" in text_l and "python" in text_l:
+            return "list_python_processes"
+
+        return "unknown"
+
+    # ------------------------------
+    # Command Prediction
+    # ------------------------------
+    def predict_command(self, text: str):
+        intent = self.infer_intent(text)
+
+        if intent == "git_push":
+            return "git push origin main"
+
+        if intent == "kill_process":
+            return "kill $(pgrep chrome)"
+
+        if intent == "list_python_processes":
+            return "ps aux | grep python"
+
+        # fallback to semantic search
+        results = self.search(text)
+        if results:
+            return results[0][0]
+
+        return None
