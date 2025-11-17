@@ -16,7 +16,7 @@ class AdaptiveLearner:
     def load_or_init(self) -> Dict:
         """
         Loads the learning profile from disk if it exists.
-        Otherwise, creates a default profile and saves it.
+        Otherwise creates a default profile and saves it.
         """
         if os.path.exists(self.path):
             with open(self.path, "r", encoding="utf-8") as f:
