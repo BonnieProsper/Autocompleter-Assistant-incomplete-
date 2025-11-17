@@ -16,12 +16,12 @@ class SemanticEngine:
     def __init__(self, store_path: str = "cli/memory/vector_store.pkl"):
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
         self.store_path = store_path
-        self.store = self._load_store()
+        self.store = self.load_store()
 
     # ------------------------------
     # Store Management
     # ------------------------------
-    def _load_store(self):
+    def load_store(self):
         if os.path.exists(self.store_path):
             with open(self.store_path, "rb") as f:
                 return pickle.load(f)
@@ -32,7 +32,7 @@ class SemanticEngine:
             pickle.dump(self.store, f)
 
     # ------------------------------
-    # Ingest New Knowledge
+    # Take in new knowledge
     # ------------------------------
     def add_entry(self, text: str):
         self.store["entries"].append(text)
