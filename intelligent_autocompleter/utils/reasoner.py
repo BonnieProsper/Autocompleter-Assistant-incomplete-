@@ -2,6 +2,8 @@ import re
 from typing import List
 from cli.ui.colors import yellow, red, green
 
+from intelligent_autocompleter.core.semantic_engine import SemanticEngine
+
 class CommandReasoner:
     """
     A reasoning engine that analyzes user input to provide contextual suggestions 
@@ -9,6 +11,7 @@ class CommandReasoner:
     """
     def __init__(self, registry):
         self.registry = registry  # Registry that holds additional reasoning hooks
+        self.semantic = SemanticEngine()
 
     def analyze_input(self, user_input: str) -> List[str]:
         """
@@ -17,12 +20,18 @@ class CommandReasoner:
         suggestions = []
       
         # Run built-in reasoning checks
-        suggestions.extend(self._check_for_dangerous_commands(user_input))
-        suggestions.extend(self._suggest_common_autocorrections(user_input))
-        suggestions.extend(self._predict_next_possible_command(user_input))
-
+        suggestions.extend(self.flag_dangerous(user_input))
+        suggestions.extend(self.suggest_autocorrections(user_input))
+        suggestions.extend(self.predict_next_argument(user_input))
+        
         # Run plugin-specific reasoning hooks
-        suggestions.extend(self.registry.execute_reasoning_hooks(user_input))
+        suggestions.extend(self.registry.run_reasoning(user_input))
+
+        # Semantic intelligence layer
+        semantic_cmd = self.semantic_engine.predict_command(user_input)
+        if semantic_cmd:
+            suggestions.append(green(f"AI Suggestion → {semantic_cmd}"))
+
         return suggestions
 
     def flag_dangerous(self, user_input: str) -> List[str]:
