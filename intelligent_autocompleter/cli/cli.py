@@ -114,7 +114,7 @@ class CLI:
 
         # accept suggestion word corresponding to number
         if chosen.isdigit() and 1 <= int(chosen) <= len(suggestions):
-            word, _ = suggestions[int(chosen) - 1]
+            word, _ = suggestions[int(chosen) - 1] 
             console.print(f"[green]Accepted:[/green] {word}")
             self.hp.accept(word)
             self.context.learn(word) # learn for future predictions
