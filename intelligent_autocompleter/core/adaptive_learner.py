@@ -105,8 +105,9 @@ class AdaptiveLearner:
         permanently dominating due to accumulated rewards.
         """
         for attr in ["semantic_weight", "markov_weight", "personal_weight", "plugin_weight"]:
-            w = getattr(self.profile, attr)
-            setattr(self.profile, attr, max(MIN_WEIGHT, w * DECAY_FACTOR))
+            current = getattr(self.profile, attr)
+            decayed = max(MIN_WEIGHT, current * DECAY_FACTOR)
+            setattr(self.profile, attr, decayed)
 
     def normalize(self):
         """Normalizes all weights so they sum to 1 (L1 norm)."""
@@ -125,8 +126,9 @@ class AdaptiveLearner:
         """
         key = f"{source}_weight"
         if hasattr(self.profile, key):
-            new_value = max(MIN_WEIGHT, min(MAX_WEIGHT, getattr(self.profile, key) + delta))
-            setattr(self.profile, key, new_value)
+            current = getattr(self.profile, attr)
+            new_value = max(MIN_WEIGHT, min(MAX_WEIGHT, current + delta))
+            setattr(self.profile, attr, new_value)
 
     # Public API ------------------------------------------------------------------
     def reward(self, source: str):
