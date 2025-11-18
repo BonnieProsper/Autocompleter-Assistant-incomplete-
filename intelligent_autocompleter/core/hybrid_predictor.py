@@ -141,6 +141,20 @@ class HybridPredictor:
                 markov_scores, embed_scores, personal_scores, freq_scores, topn=topn
             )
 
+            """ include?:
+            # get base weights from learner and pass to FusionRanker temporarily
+            weights = self.learner.get_weights()
+            # FusionRanker in your code supports a 'weights' argument on init,
+            # so create a short-lived ranker with those weights (cheap).
+            ranker = FusionRanker(weights=weights, preset=None, personalizer=self.ctx)
+            ranked = ranker.rank(markov=markov_scores_items,
+                     embeddings=embed_list,
+                     fuzzy=fuzzy_list,
+                     base_freq=freq_map,
+                     recency_map={}, topn=topn)
+
+            """
+
             # Adaptive bias based on feedback for personalised ranking
             ranked = self.apply_feedback_bias(ranked, last)
 
@@ -159,10 +173,25 @@ class HybridPredictor:
         Args:
         - word: The accepted suggestion.
         """
+        if not word:
+            return
         w = word.lower().strip()
         self.accepted[w] += 1 # increase acceptance count for word by 1
+        """ include?:
+        try:
+            self.learner.reward(source)
+        except Exception:
+            pass
+        """
         self.feedback.record_accept(w) # record acceptance in feedback tracker
         self.learner.reward(source="semantic")
+        self.learner.penalize(source) # check
+        """ include?
+        # in CLI suggestion flow after user picks a different typed word `typed`
+        self.hp.learner.penalize(source_of_suggestion)
+        self.hp.learner.reward("personal")
+        self.hp.retrain(typed)
+        """
 
         # Adjust ranker dynamically based on ongoing feedback trend
         self.rank.autotune(self.feedback.trends())
