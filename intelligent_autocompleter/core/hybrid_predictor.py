@@ -144,14 +144,35 @@ class HybridPredictor:
             """ include?:
             # get base weights from learner and pass to FusionRanker temporarily
             weights = self.learner.get_weights()
-            # FusionRanker in your code supports a 'weights' argument on init,
-            # so create a short-lived ranker with those weights (cheap).
+            # FusionRanker supports a 'weights' argument on init
+            # so create a short-lived ranker with those weights 
             ranker = FusionRanker(weights=weights, preset=None, personalizer=self.ctx)
             ranked = ranker.rank(markov=markov_scores_items,
                      embeddings=embed_list,
                      fuzzy=fuzzy_list,
                      base_freq=freq_map,
                      recency_map={}, topn=topn)
+            OR
+            # after presenting suggestions:
+            choice = Prompt.ask("Pick [num / word / Enter]", default="").strip()
+            if not choice:
+                return
+            if choice.isdigit():
+                idx = int(choice)
+                if 1 <= idx <= len(sugg):
+                    chosen = sugg[idx-1][0]
+                    self.hp.accept(chosen, source="fusion")   # or pass detected source
+                    self._save_state()
+                    console.print(f"[green]Accepted:[/green] {chosen}")
+            else:
+                # if user typed something different THEN penalize model a bit, reward personal
+                typed = choice.strip().lower()
+                # identify source that suggested the typed word? skip and just penalize generic
+                self.hp.learner.penalize("semantic")
+                self.hp.learner.reward("personal")
+                self.hp.retrain(typed)
+                self._save_state()
+                console.print(f"[cyan]Added:{typed}[/cyan]")
 
             """
 
