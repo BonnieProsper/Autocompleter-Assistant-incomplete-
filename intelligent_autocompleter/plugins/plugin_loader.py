@@ -1,16 +1,25 @@
-# intelligent_autocompleter/plugins/loader.py
+# intelligent_autocompleter/plugins/plugin_loader.py
 # plugin loader that loads .py files from a directory and instantiates plugin classes.
 # intentionally simple/explicit for now
+"""
+PluginLoader - scans a path and registers plugin instances into a PluginRegistry.
+Usage:
+  reg = PluginRegistry()
+  loader = PluginLoader(path="intelligent_autocompleter/plugins", registry=reg, cfg_map=my_cfg)
+  loader.load_all()
+  reg.call_init()
+"""
 
 import os
 import importlib.util
 import sys
-from typing import Optional, List
+import traceback 
+from typing import Optional, Dict
 from .registry import PluginRegistry
 from .base import PluginBase
 
 class PluginLoader:
-    def __init__(self, path: str, registry: Optional[PluginRegistry] = None, cfg_map: dict = None):
+    def __init__(self, path: str, registry: Optional[PluginRegistry] = None, cfg_map: Optional[Dict[str, dict]] = None):
         """
         path: directory containing plugins (modules)
         cfg_map: dict(plugin_name to config) to pass into plugin constructors
@@ -20,43 +29,50 @@ class PluginLoader:
         self.cfg_map = cfg_map or {}
 
     def discover(self) -> List[str]:
+        """Return list of candidate modules (module name, path to file)."""
+        out = []
         if not os.path.isdir(self.path):
-            return []
-        names = []
-        for nm in os.listdir(self.path):
+            return out
+        for nm in sorted(os.listdir(self.path)):
             if nm.startswith("_"):
                 continue
-            if nm.endswith(".py"):
-                names.append(nm[:-3])
-            elif os.path.isdir(os.path.join(self.path, nm)) and os.path.exists(os.path.join(self.path, nm, "__init__.py")):
-                names.append(nm)
-        return names
+            py = os.path.join(self.path, nm + ".py")
+            pkg_init = os.path.join(self.path, nm, "__init__.py")
+            if os.path.exists(py):
+                out.append((nm, py))
+            elif os.path.exists(pkg_init):
+                out.append((nm, pkg_init))
+        return out
 
-    def load_module(self, filepath: str, modname: str):
-        spec = importlib.util.spec_from_file_location(modname, filepath)
+    def load_module(self, mod_name: str, path: str):
+        spec = importlib.util.spec_from_file_location(f"intelligent_autocompleter.plugins.{mod_name}", path)
         if spec is None:
             return None
-        m = importlib.util.module_from_spec(spec)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
         try:
-            spec.loader.exec_module(m)  # type ignore
-            return m
+            spec.loader.exec_module(mod)  # type: ignore
+            return mod
         except Exception:
-            # fail noisily but continue
-            print(f"[plugin-loader] failed to import {modname} ({filepath})")
+            print(f"[plugin-loader] failed to import {mod_name}")
+            traceback.print_exc()
             return None
 
-    def load_all(self):
-        names = self.discover()
-        for nm in names:
-            p = os.path.join(self.path, nm + ".py")
-            pkg = os.path.join(self.path, nm, "__init__.py")
-            target = p if os.path.exists(p) else pkg
-            if not os.path.exists(target):
-                continue
-            mod = self.load_module(target, f"plugin_{nm}")
+    def load_all(self, verbose: bool = False):
+        for nm, p in self.discover():
+            mod = self.load_module(nm, p)
             if not mod:
                 continue
-            # instantiate classes that subclass PluginBase
+            # try register() first
+            if hasattr(mod, "register") and callable(getattr(mod, "register")):
+                try:
+                    mod.register(self.registry)
+                    if verbose:
+                        print(f"[plugin-loader] registered {nm} via register()")
+                    continue
+                except Exception:
+                    traceback.print_exc()
+            # otherwise try to find a Plugin/PluginClass
             for objname in dir(mod):
                 obj = getattr(mod, objname)
                 try:
@@ -64,24 +80,29 @@ class PluginLoader:
                         cfg = self.cfg_map.get(getattr(obj, "name", objname), None)
                         inst = obj(cfg)
                         self.registry.register(inst)
+                        if verbose:
+                            print(f"[plugin-loader] instantiated plugin {objname} from {nm}")
                 except Exception:
-                    # weird plugin so ignore
-                    continue
+                    traceback.print_exc()
 
-    def load_one(self, module_name: str):
-        # load a single module by file name or folder name for convenience
-        target_py = os.path.join(self.path, module_name + ".py")
-        target_pkg = os.path.join(self.path, module_name, "__init__.py")
-        target = target_py if os.path.exists(target_py) else target_pkg
-        if not os.path.exists(target):
-            raise FileNotFoundError(target)
-        mod = self.load_module(target, f"plugin_{module_name}")
-        if mod is None:
-            raise ImportError(module_name)
-        for objname in dir(mod):
-            obj = getattr(mod, objname)
-            if isinstance(obj, type) and issubclass(obj, PluginBase) and obj is not PluginBase:
-                cfg = self.cfg_map.get(getattr(obj, "name", objname), None)
-                inst = obj(cfg)
-                self.registry.register(inst)
-        return True
+    def load_one(self, module_name: str, verbose: bool = False):
+        """Load a single plugin by module name (filename without .py or package dir)."""
+        for nm, p in self.discover():
+            if nm == module_name:
+                mod = self.load_module(nm, p)
+                if mod:
+                    if hasattr(mod, "register") and callable(getattr(mod, "register")):
+                        mod.register(self.registry)
+                        if verbose:
+                            print(f"[plugin-loader] registered {nm} via register()")
+                        return True
+                    for objname in dir(mod):
+                        obj = getattr(mod, objname)
+                        if isinstance(obj, type) and issubclass(obj, PluginBase) and obj is not PluginBase:
+                            cfg = self.cfg_map.get(getattr(obj, "name", objname), None)
+                            inst = obj(cfg)
+                            self.registry.register(inst)
+                            if verbose:
+                                print(f"[plugin-loader] loaded plugin {objname}")
+                            return True
+        raise FileNotFoundError(module_name)
