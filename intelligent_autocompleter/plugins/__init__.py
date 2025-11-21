@@ -1,5 +1,8 @@
 # intelligent_autocompleter/plugins/__init__.py
-# public plugin helpers
+"""
+Plugin package for intelligent_autocompleter.
+Expose loader + registry + base plugin so callers can import conveniently.
+"""
 
 from .loader import PluginLoader
 from .registry import PluginRegistry
