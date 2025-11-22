@@ -1,5 +1,6 @@
 # intelligent_autocompleter/plugins/code_assist_plugin.py
 from ..base import PluginBase
+from typing import List, Dict, Any
 
 class CodeAssist(PluginBase):
     """
@@ -9,7 +10,7 @@ class CodeAssist(PluginBase):
     """
     # plugin version/name
     name = "code_assist"
-    version = "0.1"
+    version = "0.2"
 
     # predefined common code structure set
     SNIPPETS = {
@@ -17,23 +18,19 @@ class CodeAssist(PluginBase):
         "if": "if cond:\n    pass",            # if statement template
         "def": "def function_name(args):\n    '''docstring'''\n    return None", # function definition + docstring
         "import": "import os\nimport sys",     # common imports (system and os libraries)
+         "try": "try:\n    pass\nexcept Exception as e:\n    print(e)", # try and exception error template
     }
 
-    def on_suggest(self, bundle, suggestions):
+    def on_suggest(self, fragment: str, candidates: List[Candidate], bundle: Dict[str, Any]) -> List[Candidate]:
         """
         Suggests a code snippet based on the last token typed by the user.
-        Parameters:
-        - bundle (dict): Contains various contextual information like the last token typed.
-        - suggestions (list): Existing suggestions that the plugin can enhance.
-        Returns:
-        - list: Updated list of suggestions with an additional code snippet if applicable.
         """
-        last = bundle.get("last_token", "")
-        if not last:
-            return suggestions
-        key = last.strip()
-        if key in self.SNIPPETS:
-            suggestions = suggestions.copy()
-            suggestions.insert(0, (self.SNIPPETS[key], 0.9))
-        return suggestions
+        tok = fragment.strip().split()[-1] if fragment.strip() else ""
+        out = list(candidates)
+        if tok in self.SNIPPETS:
+            out.insert(0, (self.SNIPPETS[tok], 0.9))
+        return out
+
+    def register(reg):
+        reg.register(CodeAssist())
 
