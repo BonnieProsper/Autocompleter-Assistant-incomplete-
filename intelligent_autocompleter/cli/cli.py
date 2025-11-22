@@ -1,11 +1,11 @@
 """
 cli.py - command line interface assistant
 Features:
-- Live autocompletion with color-coded predictions
-- Adaptive learning and session persistence
-- Real time analytics summary
-- Integrates hybrid_predictor to make predictions for the next word(s)
-- Uses Rich for styling, session analytics, and adaptive assistance
+- Live autocompletion with color-coded predictions using HybridPredictor for predictions
+- Adaptive learning, quiet feedback tracking and session persistence
+- Plugin registry for custom expansion
+- Real time optional weight readout
+- Uses Rich for tables and formatting
 """
 
 import os
@@ -13,6 +13,7 @@ import sys
 import json
 import time
 import pickle
+from typing import List, Tuple
 
 # ui styling with Rich
 from rich.console import Console
@@ -23,6 +24,9 @@ from rich.prompt import Prompt
 from rich import box
 
 from intelligent_autocompleter.core.hybrid_predictor import HybridPredictor
+from intelligent_autocompleter.core.adaptive_learner import AdaptiveLearner
+from intelligent_autocompleter.core.feedback_tracker import FeedbackTracker
+from intelligent_autocompleter.core.plugin_registry import PluginRegistry
 from intelligent_autocompleter.utils.logger_utils import Log
 from intelligent_autocompleter.utils.metrics_tracker import Metrics
 from intelligent_autocompleter.utils.config_manager import Config
@@ -32,9 +36,11 @@ from intelligent_autocompleter.core.context_personal import CtxPersonal
 console = Console()
 
 # initialise file paths
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+ROOT = os.path.dirname(__file__)
+DATA_DIR = os.path.join(ROOT, "data")
 MODEL_PATH = os.path.join(DATA_DIR, "model_state.pkl")
 SESSION_PATH = os.path.join(DATA_DIR, "session_state.json")
+PLUGIN_CONFIG = os.path.join(DATA_DIR, "plugins_config.json")
 
 class CLI:
     """Command-line interface (CLI) class to manage user interaction, autocompletion, and session persistence."""
@@ -46,13 +52,19 @@ class CLI:
         - Initializes metrics tracking
         - Loads previous session data 
         """
-        self.hp = HybridPredictor()
+        self.registry = PluginRegistry()
+        self.hp = HybridPredictor(registry=self.registry)
+        self.learner = AdaptiveLearner()
+        self.feedback = FeedbackTracker()
+        
         self.context = CtxPersonal()
         self.metrics = Metrics()
         self.cfg = Config()
+        
         self.session_data = []
         self.running = True
         self._load_state()
+        self._load_plugin_config()
 
     def run(self):
         """
@@ -62,8 +74,8 @@ class CLI:
         - Processes user input with autocompletion suggestions.
         """
         console.rule("[bold magenta]Intelligent Autocompleter[/bold magenta]")
-        console.print("[cyan]Type sentences with live suggestions. Use [yellow]#comment[/yellow] to add notes.[/cyan]")
-        console.print("Press [bold]/quit[/bold] to exit.\n")
+        console.print("[cyan]Type sentences with live suggestions. Use #comment for notes.[/cyan]")
+        console.print("Commands: /quit /weights /plugins /context /feedback /reset\n")
 
         # run loop as long as CLI is running
         while self.running:
