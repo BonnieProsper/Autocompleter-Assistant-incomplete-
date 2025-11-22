@@ -42,9 +42,9 @@ class CLI:
         """
         Initialize the CLI assistant:
         - Loads the HybridPredictor model
-        - Sets up context (user-specific data)
+        - Sets up context (user-specific data) 
         - Initializes metrics tracking
-        - Loads previous session data
+        - Loads previous session data 
         """
         self.hp = HybridPredictor()
         self.context = CtxPersonal()
@@ -97,15 +97,15 @@ class CLI:
         # Handle inline comments
         if fragment.startswith("#"):
             self._add_comment(fragment)
-            return
+            return 
 
         # get autocompletion suggestions from HybridPredictor
-        suggestions = self.hp.suggest(fragment)
+        suggestions = self.hp.suggest(fragment) 
         self.metrics.record("suggest_time", time.perf_counter() - start_time) # record time for stats
         if not suggestions:
             console.print("[dim](no suggestions)[/dim]")
             return
-        self._display_suggestions(suggestions) # display colour coded table of suggestions
+        self.display_suggestions(suggestions) # display colour coded table of suggestions
 
         # prompt user to select suggestion/custom word
         chosen = Prompt.ask("Pick number / type override / Enter to skip", default="")
