@@ -1,16 +1,17 @@
 # hybrid_predictor.py 
 # Combines:
-# - Markov (syntactic/contextual predictions)
-# - Embeddings (semantic similarity)
-# - BK-tree (fuzz matchingy)
-# - User personalization (bias + recent context, CtxPersonal)
-# - FusionRanker (adaptive weighting/presets)
+# Markov (syntactic/contextual predictions)
+# Embeddings (semantic similarity)
+# BK-tree (fuzzy matching)
+# User personalization (bias + recent context, CtxPersonal)
+# FusionRanker (adaptive weighting/presets)
 # Methods for training, retraining, suggestion generation, acceptance/rejection feedback, and state persistence.
+# uses plugins to extend behaviour
 
 import time
 import math
 import pickle
-from collections import Counter, deque
+from collections import Counter
 from typing import List, Dict, Tuple, Optional
 
 from intelligent_autocompleter.core.markov_predictor import MarkovPredictor
