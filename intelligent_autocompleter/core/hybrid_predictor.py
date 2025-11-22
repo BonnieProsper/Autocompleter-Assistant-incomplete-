@@ -11,8 +11,8 @@
 import time
 import math
 import pickle
-from collections import Counter
-from typing import List, Dict, Tuple, Optional
+from collections import Counter, deque 
+from typing import List, Dict, Tuple, Optional, Iterable
 
 from intelligent_autocompleter.core.markov_predictor import MarkovPredictor
 from intelligent_autocompleter.core.embeddings import Embeddings
