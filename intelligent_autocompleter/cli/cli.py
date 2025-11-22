@@ -81,95 +81,140 @@ class CLI:
         while self.running:
             try:
                 # prompt user for input (suggestions shown as they type)
-                fragment = Prompt.ask("[green]You[/green]", default="")
-                if not fragment: # if no input continue to next iteration
+                frag = Prompt.ask("[green]You[/green]", default="")
+                if not frag: # if no input continue to next iteration
                     continue
-                if fragment.startswith("/quit"):
-                    self._exit()
-                    break
-                if fragment.startswith("/save"):
-                    self._save_state()
+
+                # handle commands
+                if frag.startswith("/"):
+                    self._handle_command(frag)
                     continue
-                # process users input with autocompletion
-                self._process_input(fragment)
+                # handle inline comments
+                if frag.startswith("#"):
+                    self._add_comment(frag)
+                    continue
+
+                self._process_input(frag)
             except (EOFError, KeyboardInterrupt):
                 self._exit()
                 break
 
-    # Core input processing + live suggestion handling --------------------------
-    def process_input(self, fragment: str):
+    # COMMAND HANDLING -----------------------------------------------------------
+    def _handle_command(self, cmd: str):
         """
-        Process the user's input fragment:
-        - Generate autocompletion suggestions
-        - Accept user selection or allow custom input
-        - Record session data and trigger autosave
+        Handles special slash commands.
         """
-        start_time = time.perf_counter()
+        if cmd.startswith("/quit"):
+            self._exit()
+            return
 
-        # Handle inline comments
-        if fragment.startswith("#"):
-            self._add_comment(fragment)
-            return 
+        if cmd == "/weights":
+            self._show_weights()
+            return
 
-        # get autocompletion suggestions from HybridPredictor
-        suggestions = self.hp.suggest(fragment) 
-        self.metrics.record("suggest_time", time.perf_counter() - start_time) # record time for stats
+        if cmd == "/plugins":
+            self._show_plugins()
+            return
+
+        if cmd == "/context":
+            self._show_context()
+            return
+
+        if cmd == "/feedback":
+            self._show_feedback_log()
+            return
+
+        if cmd == "/reset":
+            self._reset_state()
+            return
+
+        console.print(f"[red]Unknown command:[/red] {cmd}")
+
+    # CORE INPUT PROCESSING ---------------------------------------------------------------
+    def _process_input(self, fragment: str):
+        """
+        Loop:
+        Prediction → display → user choice → apply → adaptive learning → feedback tracking
+        """
+        t0 = time.perf_counter()
+        suggestions = self.hp.suggest(fragment) # get suggestions from HybridPredictor
+        self.metrics.record("suggest_time", time.perf_counter() - t0) # record time for stats
+
         if not suggestions:
             console.print("[dim](no suggestions)[/dim]")
             return
-        self.display_suggestions(suggestions) # display colour coded table of suggestions
 
+        self._display_suggestions(suggestions)
         # prompt user to select suggestion/custom word
-        chosen = Prompt.ask("Pick number / type override / Enter to skip", default="")
+        chosen = Prompt.ask("Pick # / override / Enter to skip", default="")
         if not chosen:
             return
 
-        # accept suggestion word corresponding to number
+        # accept suggestion using corresponding number
         if chosen.isdigit() and 1 <= int(chosen) <= len(suggestions):
-            word, _ = suggestions[int(chosen) - 1] 
-            console.print(f"[green]Accepted:[/green] {word}")
+            word, score, source = suggestions[int(chosen)-1]
+            console.print(f"[green]Accepted:[/green] {word}  [dim]({source})[/dim]")
+
             self.hp.accept(word)
-            self.context.learn(word) # learn for future predictions
+            self.context.learn(word)
+            self.learner.update(word)
+            self.feedback.push("accepted", {"word": word, "src": source})
+
             self.session_data.append({"input": fragment, "accepted": word})
-        else:
-            # custom word/retrain model
-            custom = chosen.strip()
-            self.hp.retrain(custom)
-            console.print(f"[cyan]Added custom:[/cyan] {custom}")
-            self.session_data.append({"input": fragment, "custom": custom})
+            self._autosave()
+            return
 
-        self._autosave() # autosave after processing input
+        # custom word
+        word = chosen.strip()
+        self.hp.retrain(word)
+        self.context.learn(word)
+        self.learner.update(word)
+        self.feedback.push("custom", {"word": word})
 
-    def display_suggestions(self, suggestions):
+        console.print(f"[cyan]Added custom:[/cyan] {word}")
+        self.session_data.append({"input": fragment, "custom": word})
+        self._autosave()
+
+    # DISPLAY -------------------------------------------------------------------------------
+    def _display_suggestions(self, suggestions: List[Tuple[str, float, str]]):
         """
         Display the autocompletion suggestions in a color-coded table.
-        Each suggestion is ranked and color-coded based on its relevance.
+        Each suggestion is ranked and color-coded based on its relevance, includes source.
         """
         table = Table(title="Predictions", box=box.SIMPLE, show_edge=False)
         table.add_column("#", justify="right", style="cyan")
         table.add_column("Word", style="bold")
         table.add_column("Score", justify="right", style="magenta")
-        for i, (word, score) in enumerate(suggestions[:5], 1):
-            style = self._color_for_word(word)
-            table.add_row(str(i), Text(word, style=style), f"{score:.3f}")
+        table.add_column("Source", justify="left", style="dim")
+
+        for i, (w, score, src) in enumerate(suggestions[:5], 1):
+            style = self._color_for_word(w)
+            table.add_row(
+                str(i),
+                Text(w, style=style),
+                f"{score:.3f}",
+                src
+            )
         console.print(table)
 
-    def color_for_word(self, word):
-        """Assign a color to each word based on semantic categories.
+    def _color_for_word(self, word: str) -> str:
+        """
+        Assign a color to each word based on semantic categories.
         - Green for personal vocabulary (frequent words)
-        - Cyan for short words
-        - Magenta for title-case words (names, etc.)
-        - Yellow as the fallback color
+        - Cyan for short words, contextual
+        - Magenta for title-case words (names etc, semantic)
+        - Yellow as the fallback color (or mixed)
         """
         if word in self.context.freq:
-            return "green"     # personal vocabulary
-        if word.isalpha() and len(word) <= 4:
-            return "cyan"      # short/contextual
+            return "green"
+        if len(word) <= 4:
+            return "cyan"
         if word.istitle():
-            return "magenta"   # semantic
-        return "yellow"        # fallback or mixed
+            return "magenta"
+        return "yellow"
 
-    def add_comment(self, comment):
+    # COMMENTS --------------------------------------------------------------
+    def _add_comment(self, comment: str):
         """
         Handle comments entered by the user, for interactive note taking.
         Prints the comment in the console and adds it to session data.
@@ -179,13 +224,57 @@ class CLI:
         self.session_data.append({"comment": note})
         self._autosave()
 
-    # Persistence: model + session memory---------------------------------------------
-    def autosave(self):
+
+    # COMMAND: WEIGHTS/PLUGINS/CONTEXT/FEEDBACK --------------------------------------
+    def _show_weights(self):
+        panel = Panel(
+            json.dumps(self.hp.get_weights(), indent=2),
+            title="Current Weights",
+            border_style="cyan"
+        )
+        console.print(panel)
+
+    def _show_plugins(self):
+        rows = []
+        for name, obj in self.registry.plugins.items():
+            enabled = "yes" if obj.enabled else "no"
+            rows.append((name, enabled, obj.__class__.__name__))
+        table = Table(title="Loaded Plugins", box=box.SIMPLE)
+        table.add_column("Name")
+        table.add_column("Enabled")
+        table.add_column("Class")
+        for r in rows:
+            table.add_row(*r)
+
+        console.print(table)
+
+    def _show_context(self):
+        freq_sorted = sorted(self.context.freq.items(), key=lambda kv: kv[1], reverse=True)
+        table = Table(title="Personal Vocabulary", box=box.MINIMAL)
+        table.add_column("Word")
+        table.add_column("Freq")
+
+        for w, c in freq_sorted[:20]:
+            table.add_row(w, str(c))
+
+        console.print(table)
+
+    def _show_feedback_log(self):
+        logs = self.feedback.dump()
+        panel = Panel(
+            json.dumps(logs, indent=2),
+            title="Feedback Log",
+            border_style="yellow"
+        )
+        console.print(panel)
+
+    # STATE/SAVING/LOADING ----------------------------------------------------------
+    def _autosave(self):
         """Automatically save session data every 5 entries."""
         if len(self.session_data) % 5 == 0:
             self._save_state(quiet=True)
 
-    def save_state(self, quiet=False):
+    def _save_state(self, quiet=False):
         """
         Save the current model state and session data to disk.
         - Model state is saved with pickle.
@@ -200,10 +289,11 @@ class CLI:
             if not quiet:
                 console.print("[green]State saved.[/green]")
         except Exception as e:
-            console.print(f"[red]Save failed:[/red] {e}")
             Log.write(f"[ERROR] Save: {e}")
+            if not quiet:
+                console.print(f"[red]Save failed:[/red] {e}")
 
-    def load_state(self):
+    def _load_state(self):
         """
         Load the saved model and session state from disk.
         If no state exists then skip loading.
@@ -215,42 +305,42 @@ class CLI:
                 console.print("[dim]Model loaded.[/dim]")
             except Exception as e:
                 Log.write(f"[ERROR] Load model: {e}")
+
         if os.path.exists(SESSION_PATH):
             try:
                 with open(SESSION_PATH, "r", encoding="utf8") as f:
                     self.session_data = json.load(f)
-                console.print(f"[dim]Restored {len(self.session_data)} past entries.[/dim]")
+                console.print(f"[dim]Restored {len(self.session_data)} entries.[/dim]")
             except Exception:
                 pass
 
-    def exit_session(self):
+    def _load_plugin_config(self):
+        """Load enable/disable flags."""
+        if not os.path.exists(PLUGIN_CONFIG):
+            return
+
+        try:
+            with open(PLUGIN_CONFIG, "r", encoding="utf8") as f:
+                cfg = json.load(f)
+            self.registry.apply_config(cfg)
+        except Exception as e:
+            console.print(f"[red]Plugin config load failed:[/red] {e}")
+
+    # EXIT + RESET ------------------------------------------------------------------------
+    def _reset_state(self):
+        """Wipes session but not model."""
+        self.session_data = []
+        self.feedback.reset()
+        console.print("[yellow]Session cleared.[/yellow]")
+
+    def _exit(self):
         """
         Exit CLI program cleanly.
-        Save current state and print a session summary.
+        Save current state.
         """
-        console.rule("[red]Exiting...[/red]")
+        console.rule("[red]Exiting[/red]")
         self._save_state()
-        summary = self._session_summary()
-        console.print(summary)
         self.running = False
-
-    def session_summary(self):
-        """
-        Create and return a summary table (Rich table) of the current session. Including:
-        - Total number of user inputs
-        - Number of comments added
-        - The user's top-used 5 most used words (from personal context learning)
-        """
-        total_inputs = len([x for x in self.session_data if "input" in x])
-        total_comments = len([x for x in self.session_data if "comment" in x])
-        top_words = sorted(self.context.freq.items(), key=lambda kv: kv[1], reverse=True)[:5]
-        summary = Table(title="Session Summary", box=box.MINIMAL)
-        summary.add_column("Metric", style="cyan")
-        summary.add_column("Value", style="white")
-        summary.add_row("Total inputs", str(total_inputs))
-        summary.add_row("Comments added", str(total_comments))
-        summary.add_row("Top words", ", ".join(w for w, _ in top_words) or "(none)")
-        return summary
 
 
 if __name__ == "__main__":
