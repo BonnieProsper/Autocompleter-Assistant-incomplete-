@@ -1,13 +1,25 @@
 # intelligent_autocompleter/plugins/registry.py
 """
-Plugin registry: holds plugin instances, runs hooks safely and deterministically.
+Plugin registry that holds plugin instances, runs hooks safely and deterministically. Includes:
+ - registration/unregistration
+ - safe lifecycle hooks (train, retrain, accept)
+ - deterministic suggest pipeline
+ - per-plugin enable/disable flags
+ - config injection (plugins/config.json is optional)
+ - optional source tagging for debugging
 """
 
+from __future__ import annotations
+from typing import Dict, List, Tuple, Any, Optional
+import importlib.util
 import traceback
-from typing import Dict, List, Tuple, Any
+import os
 
-from .base import PluginBase, Candidate, Bundle
+from intelligent_autocompleter.plugins.base import PluginBase
+from intelligent_autocompleter.utils.logger_utils import Log
 
+# plugin returns normally (word, score)
+Candidate = Tuple[str, float]
 
 class PluginRegistry:
     def __init__(self):
