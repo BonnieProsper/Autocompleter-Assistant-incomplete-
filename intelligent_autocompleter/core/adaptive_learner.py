@@ -1,23 +1,22 @@
+# intelligent_autocompleter/core/adaptive_learner.py
 """
-adaptive_learner.py
-
-An adaptive learning module that adjusts weighting (the influence of each prediction source)
-between each prediction source (semantic, markov, personal, plugin-based predictions)
-based on user behaviour. This makes the autocompleter more personalized to the user over 
-time by adjusting weights based on real user feedback. This module's purpose is:
-- to reward/penalize updates
-- category specific reinforcement
-- normalize weights with slight decay to prevent runaway dominance
-- exponential decay (prevents runaway dominance)
-- temperature scaling (for long term stability under noisy feedback)
-- persist learning state on disk
+AdaptiveLearner
+---------------
+Small online learning layer that adjusts the relative weights (influence) of
+each prediction source (semantic, markov, personal, plugin) based on user behaviour.
+Design goals:
+ - small & understandable (not a research project (but make it one in future?)
+ - reward/penalize hook for FeedbackTracker
+ - decay keeps the system stable (prevents one source from dominating forever)
+ - weights are always normalized to sum of approx 1
+ - persistent JSON profile so behaviour survives restarts
 """
 
 import os
 import json
-from typing import Dict
+from typing import Dict, Any
 
-# try to reuse logger if available
+# optional logger
 try:
     from intelligent_autocompleter.utils.logger_utils import Log
 except Exception:
@@ -25,105 +24,146 @@ except Exception:
         @staticmethod
         def write(m): print(m)
 
-DEFAULT_PATH = os.path.join("userdata", "adaptive_profile.json")
-
-# some sane constants
+# Defaults/hyperparams ------------------------------------
 DEFAULT_PROFILE = {
-    "semantic_weight": 0.5,
-    "markov_weight": 0.3,
+    "semantic_weight": 0.45,
+    "markov_weight": 0.35,
     "personal_weight": 0.15,
     "plugin_weight": 0.05,
-    "boosts": {}
+    "boosts": {},   # category / tag boosts (plugins may use)
 }
 
-DECAY = 0.995        # slight decay each update (to prevent runaway/domination of any one source)
-LEARN_STEP = 0.03   # controls weight adjustment for each reward/penalty
-MIN_WEIGHT = 0.01   # minimum floor for stabilising
+REWARD_STEP = 0.03     # small nudges keep things smooth
+PENALTY_STEP = 0.03
+DECAY = 0.995         # tiny exponential decay per update
+MIN_WEIGHT = 0.01      # floor to prevent collapse
+
+PROFILE_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "userdata",
+    "adaptive_profile.json"
+)
 
 class AdaptiveLearner:
     """
-    Keep normalized weights for prediction sources.
-    - reward(source) nudges the given source up a little
-    - penalize(source) nudges it down
-    - normalize() keeps sum at approx 1
-    - persistent learning profile saved to disk
+    Keeps track of weights for prediction sources.
+    Public API:
+        get_weights() for normalized mapping
+        reward(source)
+        penalize(source)
+        reinforce_category(...)
+        reset()
     """
     def __init__(self, path: str = None):
-        self.path = path or DEFAULT_PATH
+        self.path = path or PROFILE_PATH
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        self.profile = self.load()  # dict
+        self._profile = self._load_or_init()
 
-    def load(self) -> Dict:
+    # Loading/saving ----------------------------------------------------------
+    def _load_or_init(self) -> Dict[str, Any]:
         if os.path.exists(self.path):
             try:
-                with open(self.path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    # ensure keys exist
-                    for k, v in DEFAULT_PROFILE.items():
-                        data.setdefault(k, v)
-                    return data
-            except Exception:
-                Log.write("[AdaptiveLearner] failed to load profile, resetting to defaults")
-        # write defaults
-        self.save(DEFAULT_PROFILE.copy())
+                with open(self.path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                # ensure all keys exist
+                for k, v in DEFAULT_PROFILE.items():
+                    data.setdefault(k, v)
+                return data
+            except Exception as e:
+                Log.write(f"[AdaptiveLearner] load failed, using defaults: {e}")
+
+        # fallback to defaults
+        self._save(DEFAULT_PROFILE.copy())
         return DEFAULT_PROFILE.copy()
 
-    def save(self, data: Dict):
+    def _save(self, data: Dict[str, Any]):
         try:
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            with open(self.path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
         except Exception as e:
             Log.write(f"[AdaptiveLearner] save failed: {e}")
 
-    # Public API ------------------------------------------------
+    # Public API -----------------------------------------------------------------
     def get_weights(self) -> Dict[str, float]:
-        """Return normalized weights mapping (semantic, markov, personal, plugin)."""
-        # get current values
+        """
+        Return normalized weight dict:
+            {"semantic": w1, "markov": w2, ...}
+        Stored keys are e.g. "semantic_weight".
+        """
         keys = ["semantic_weight", "markov_weight", "personal_weight", "plugin_weight"]
-        vals = [max(MIN_WEIGHT, float(self.profile.get(k, 0.0))) for k in keys]
-        tot = sum(vals) or 1.0
-        return {k.replace("weight", ""): v / tot for k, v in zip(keys, vals)}
+        raw = [max(MIN_WEIGHT, float(self._profile.get(k, 0.0))) for k in keys]
+        s = sum(raw) or 1.0
 
-    def reward(self, source: str, amount: float = LEARN_STEP):
-        """Nudge the weight of a source upward to reward it for a correct prediction."""
-        key = f"{source}weight"
-        if key not in self.profile:
-            # ignore unknown sources
+        # map "semantic_weight" to "semantic"
+        out = {}
+        for k, v in zip(keys, raw):
+            label = k.replace("_weight", "")
+            out[label] = v / s
+        return out
+
+    def reward(self, source: str, amount: float = REWARD_STEP):
+        """
+        Small positive bump to a source.
+        Example: reward("semantic"), reward("plugin"), etc.
+        """
+        key = f"{source}_weight"
+        if key not in self._profile:
+            # Unknown source so silently ignore
             return
-        # apply slight decay to all, then bump selected
-        self.apply_decay()
-        self.profile[key] = min(1.0, float(self.profile.get(key, 0.0)) + amount)
-        self.normalize_and_persist()
 
-    def penalize(self, source: str, amount: float = LEARN_STEP):
-        """Nudge the weight of a source downward to penalize it for an incorrect prediction."""
-        key = f"{source}weight"
-        if key not in self.profile:
+        # decay globally then add reward
+        self._apply_decay()
+        self._profile[key] = min(1.0, float(self._profile.get(key, 0.0)) + amount)
+        self._normalize_and_save()
+
+    def penalize(self, source: str, amount: float = PENALTY_STEP):
+        """
+        Small negative bump to a source.
+        """
+        key = f"{source}_weight"
+        if key not in self._profile:
             return
-        self.apply_decay()
-        self.profile[key] = max(MIN_WEIGHT, float(self.profile.get(key, 0.0)) - amount)
-        self.apply_decay()
 
-    def reinforce_category(self, category: str, amount: float = 0.02):
-        """Apply a persistent boost for a category (plugins use this)."""
-        boosts = self.profile.setdefault("boosts", {})
-        boosts[category] = float(boosts.get(category, 0.0)) + amount
-        self.save(self.profile)
+        self._apply_decay()
+        self._profile[key] = max(MIN_WEIGHT, float(self._profile.get(key, 0.0)) - amount)
+        self._normalize_and_save()
 
-    # Internals -------------------------------------------------
-    def apply_decay(self):
-        # decay for every update to keep the system drifting slowly
-        for k in ["semantic_weight", "markov_weight", "personal_weight", "plugin_weight"]:
-            self.profile[k] = max(MIN_WEIGHT, float(self.profile.get(k, 0.0)) * DECAY)
-
-    def normalize_and_persist(self):
-        keys = ["semantic_weight", "markov_weight", "personal_weight", "plugin_weight"]
-        vals = [max(MIN_WEIGHT, float(self.profile.get(k, 0.0))) for k in keys]
-        s = sum(vals) or 1.0
-        for k, v in zip(keys, vals):
-            self.profile[k] = float(v) / s
-        self.save(self.profile)
+    def reinforce_category(self, category: str, delta: float = 0.02):
+        """
+        Plugins can call this to express long-term bias.
+        Not currently used by HybridPredictor itself, but available.
+        """
+        b = self._profile.setdefault("boosts", {})
+        b[category] = float(b.get(category, 0.0)) + delta
+        self._save(self._profile)
 
     def reset(self):
-        self.profile = DEFAULT_PROFILE.copy()
-        self.save(self.profile)
+        """
+        Reset everything back to built-in defaults.
+        """
+        self._profile = DEFAULT_PROFILE.copy()
+        self._save(self._profile)
+
+    # Internal helpers ------------------------------------------------
+    def _apply_decay(self):
+        """Apply mild exponential decay to all core weights."""
+        for k in ("semantic_weight", "markov_weight",
+                  "personal_weight", "plugin_weight"):
+            v = float(self._profile.get(k, 0.0)) * DECAY
+            self._profile[k] = max(MIN_WEIGHT, v)
+
+    def _normalize_and_save(self):
+        """
+        Normalize all weights to sum to ~1 and persist to disk.
+        """
+        keys = ["semantic_weight", "markov_weight",
+                "personal_weight", "plugin_weight"]
+
+        vals = [max(MIN_WEIGHT, float(self._profile.get(k, 0.0))) for k in keys]
+        s = sum(vals) or 1.0
+
+        for k, v in zip(keys, vals):
+            self._profile[k] = v / s
+
+        self._save(self._profile)
