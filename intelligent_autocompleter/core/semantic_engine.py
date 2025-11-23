@@ -1,93 +1,159 @@
-# intelligent_autocompleter/core/semantic_engine.py
+# semantic_engine.py
+# A hybrid semantic + rule-based engine with:
+# - embeddings
+# - persistent vector store
+# - intent matching with ranking
+# - semantic fallback recommendations
+# - plugin-extensible rule system
+
 import os
 import pickle
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any, Callable
+
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
+
 class SemanticEngine:
     """
-    Local semantic engine that performs:
-    - vector embedding
-    - semantic search
-    - intent classification (rule-augmented)
-    - next-command prediction
+    Core semantic engine for the Intelligent Autocompleter.
+    Responsibilities:
+     - vectorization via SentenceTransformer
+     - semantic search (top-k)
+     - hybrid intent system (scored rule matching)
+     - mapping intents to CLI actions
+     - persistent vector store (auto-de-duplicated)
+    Plugin friendly:
+     - add intent rules dynamically
+     - add new command mappings
+     - replace the vector store or model easily
     """
-    def __init__(self, store_path: str = "cli/memory/vector_store.pkl"):
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    # Initialization -----------------------------------------
+    def __init__(
+        self,
+        store_path: str = "cli/memory/vector_store.pkl",
+        model_name: str = "all-MiniLM-L6-v2",
+    ):
         self.store_path = store_path
-        self.store = self.load_store()
+        self.model_name = model_name
 
-    # ------------------------------
-    # Store Management
-    # ------------------------------
-    def load_store(self):
+        # local semantic model
+        self.model = SentenceTransformer(self.model_name)
+        # load or initialize store
+        self.store = self._load_store()
+
+        # build rule system
+        self.intent_rules: Dict[str, List[Callable[[str], float]]] = {}
+        self._register_default_intent_rules()
+
+        # map intents to commands
+        self.intent_commands = self._default_intent_command_map()
+
+    # Persistence Layer ------------------------------------------------------------
+    def _load_store(self) -> Dict[str, Any]:
         if os.path.exists(self.store_path):
-            with open(self.store_path, "rb") as f:
-                return pickle.load(f)
-        return {"entries": [], "vectors": []}
+            try:
+                with open(self.store_path, "rb") as f:
+                    return pickle.load(f)
+            except Exception:
+                pass  # fall through to rebuild if corrupted
 
-    def save(self):
-        with open(self.store_path, "wb") as f:
+        return {"entries": [], "vectors": [], "meta": {"count": 0}}
+
+    def _save_store(self):
+        tmp = self.store_path + ".tmp"
+        with open(tmp, "wb") as f:
             pickle.dump(self.store, f)
+        os.replace(tmp, self.store_path)
 
-    # ------------------------------
-    # Take in new knowledge
-    # ------------------------------
-    def add_entry(self, text: str):
+    # Adding Knowledge -----------------------------------------------------------
+    def add_entry(self, text: str) -> None:
+        """Add a text entry unless already present (deduped)."""
+        if not text or not isinstance(text, str):
+            return
+        if text in self.store["entries"]:
+            return  # prevents duplicate vectors
+
+        vector = self.model.encode([text])[0]
         self.store["entries"].append(text)
-        vec = self.model.encode([text])[0]
-        self.store["vectors"].append(vec)
-        self.save()
+        self.store["vectors"].append(vector)
+        self.store["meta"]["count"] += 1
+        self._save_store()
 
-    # ------------------------------
-    # Semantic Search
-    # ------------------------------
-    def search(self, query: str, k=3) -> List[Tuple[str, float]]:
+    # Semantic Search ---------------------------------------------------------
+    def search(self, query: str, k: int = 3) -> List[Tuple[str, float]]:
         if not self.store["entries"]:
             return []
 
-        query_vec = self.model.encode([query])[0]
-        sims = cosine_similarity([query_vec], self.store["vectors"])[0]
-        top_indices = sims.argsort()[::-1][:k]
+        qvec = self.model.encode([query])[0]
+        sims = cosine_similarity([qvec], self.store["vectors"])[0]
+        idxs = sims.argsort()[::-1][:k]
+        return [(self.store["entries"][i], float(sims[i])) for i in idxs]
 
-        return [(self.store["entries"][i], float(sims[i])) for i in top_indices]
+    # Intent System: Scored Rules -----------------------------------------------------
+    def _register_default_intent_rules(self):
+        """Rule score: 0–1. Higher = stronger match."""
 
-    # ------------------------------
-    # Intent Classification
-    # ------------------------------
-    def infer_intent(self, text: str):
-        text_l = text.lower()
+        def contains(term: str) -> Callable[[str], float]:
+            return lambda text: 1.0 if term in text else 0.0
 
-        if any(x in text_l for x in ["push", "upload", "send"]); 
-            return "git_push"
+        def pair(a: str, b: str) -> Callable[[str], float]:
+            return lambda text: 0.8 if (a in text and b in text) else 0.0
+        
+        self.intent_rules = {
+            "git_push": [
+                contains("push"),
+                contains("upload"),
+                pair("commit", "push"),
+            ],
+            "kill_process": [
+                contains("kill"),
+                pair("end", "process"),
+            ],
+            "list_python_processes": [
+                pair("list", "python"),
+                contains("python processes"),
+            ],
+        }
 
-        if "kill" in text_l or "stop process" in text_l:
-            return "kill_process"
+    def infer_intent(self, text: str) -> Tuple[str, float]:
+        """
+        Return (intent, score). Score is the max rule weight.
+        """
+        text = text.lower()
+        best_intent = "unknown"
+        best_score = 0.0
+        for intent, rules in self.intent_rules.items():
+            for rule in rules:
+                try:
+                    score = float(rule(text))
+                except Exception:
+                    score = 0.0
+                if score > best_score:
+                    best_intent = intent
+                    best_score = score
+        return best_intent, best_score
 
-        if "list" in text_l and "python" in text_l:
-            return "list_python_processes"
+    # Intent → Command Mapping ------------------------------------------
+    def _default_intent_command_map(self):
+        return {
+            "git_push": "git push origin main",
+            "kill_process": "kill $(pgrep chrome)",
+            "list_python_processes": "ps aux | grep python",
+        }
 
-        return "unknown"
+    # Next-Command Prediction ----------------------------------------
+    def predict_command(self, text: str) -> str | None:
+        intent, score = self.infer_intent(text)
 
-    # ------------------------------
-    # Command Prediction
-    # ------------------------------
-    def predict_command(self, text: str):
-        intent = self.infer_intent(text)
+        # if intent confident → use it
+        if score >= 0.8 and intent in self.intent_commands:
+            return self.intent_commands[intent]
 
-        if intent == "git_push":
-            return "git push origin main"
-
-        if intent == "kill_process":
-            return "kill $(pgrep chrome)"
-
-        if intent == "list_python_processes":
-            return "ps aux | grep python"
-
-        # fallback to semantic search
-        results = self.search(text)
-        if results:
-            return results[0][0]
+        # fallback → semantic search
+        hits = self.search(text, k=1)
+        if hits:
+            return hits[0][0]
 
         return None
