@@ -1,172 +1,188 @@
 # intelligent_autocompleter/core/feedback_tracker.py
-# Persistent feedback tracking and light telemetry for the autocompleter.
-# Data on user responses can be used to refine future predictions adaptively.
+"""
+FeedbackTracker
+Lightweight telemetry + feedback recording for the autocompleter.
+ - quiet by default (no terminal spam unless enabled)
+ - append-only CSV log (safe for crashes)
+ - quick in-memory stats (accept/reject counts)
+ - optional hook into AdaptiveLearner
+ - small API for HybridPredictor and plugins
+"""
 
 import os
 import csv
 import time
 from collections import defaultdict, deque
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
-# try local package logger, fallback to print
+# Best-effort logger import
 try:
     from intelligent_autocompleter.utils.logger_utils import Log
 except Exception:
-    try:
-        from utils.logger_utils import Log
-    except Exception:
-        class _DummyLog:
-            @staticmethod
-            def write(msg): print(msg)
-            @staticmethod
-            def metric(*a, **k): pass
-        Log = _DummyLog()
+    class _Dummy:
+        @staticmethod
+        def write(msg): print(msg)
+        @staticmethod
+        def metric(*a, **k): pass
+    Log = _Dummy()
 
-DEFAULT_PATH = os.path.join("data", "feedback_log.csv")
+DEFAULT_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "data", "feedback_log.csv"
+)
 
 
 class FeedbackTracker:
     """
-    Tracks user suggestion feedback e.g whether suggestion was accepted/rejected/ignored.
-    - Keeps an in-memory buffer, writes append-only to CSV.
-    - Tracks per-suggestion accept/reject counts for quick queries.
-    - Optionally notifies AdaptiveLearner
+    Tracks user reactions to suggestions.
+    Public API:
+      record_accept(word, src, context)
+      record_reject(word, src, context)
+      acceptance_ratio(word)
+      stats()
+      save()
+      dump_recent()
     """
-    def __init__(self, path: str = None, learner: Optional[object] = None, verbose: bool = False):
+
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        *,
+        learner: Optional[object] = None,
+        verbose: bool = False,
+        buffer_max: int = 1000,
+    ):
         self.path = path or DEFAULT_PATH
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
 
-        # lightweight in-memory circular buffer, flush on save
-        self.buffer = deque(maxlen=1000)
+        # ring buffer storing unsaved events
+        self._buffer = deque(maxlen=buffer_max)
 
-        # counts used for fast queries
-        self.accepts = defaultdict(int)
-        self.rejects = defaultdict(int)
+        # quick accept/reject counters
+        self._accept = defaultdict(int)
+        self._reject = defaultdict(int)
 
-        # last events, for debugging
-        self.recent = deque(maxlen=200)
+        # debugging tail buffer
+        self._recent = deque(maxlen=200)
 
-        # optional adaptive learner to call 
-        self.learner = learner
+        # integration point: AdaptiveLearner instance
+        self._learner = learner
 
-        # feedback is silent as default (doesn't spam terminal). CLI can toggle.
+        # quiet by default
         self.verbose = bool(verbose)
 
-        # load historical stats from file if present
-        self.load_counts()
+        # load historical stats
+        self._load_previous()
 
-    # recording API ------------------------------------------------
-    def record(self, context: str, suggestion: str, accepted: bool, source: Optional[str] = None) -> None:
-        """
-        Records a single feedback event.
-        Parameters:
-         context: short context string (last token or sentence)
-         suggestion: the suggested token/phrase
-         accepted: True if accepted by user, False if rejected
-         source: optional label for which source suggested it (markov/semantic/plugin/etc)
-        """
-        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        event = {"timestamp": ts, "context": context, "suggestion": suggestion, "accepted": accepted, "source": source or ""}
-        self.buffer.append(event)
-        self.recent.append(event)
+    # Event recording --------------------------------------------------------------
+    def record_accept(self, word: str, src: str = "", context: str = ""):
+        self._record("accepted", word, src, context)
 
-        # update counts
-        if accepted:
-            self.accepts[suggestion] += 1
-        else:
-            self.rejects[suggestion] += 1
+    def record_reject(self, word: str, src: str = "", context: str = ""):
+        self._record("rejected", word, src, context)
 
-        # notify learner in a best-effort, non-blocking style (synchronous call)
-        if self.learner is not None:
-            try:
-                if accepted:
-                    self.learner.reward(source or "unknown")
-                else:
-                    self.learner.penalize(source or "unknown")
-            except Exception as e:
-                # keep silent, learner failing should not break feedback flow
-                Log.write(f"[FeedbackTracker] learner hook failed: {e}")
+    def _record(self, event_type: str, word: str, src: str, context: str):
+        """Internal helper for adding an event."""
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
 
-        # optionally print a message to console using Log.write
-        if self.verbose:
-            st = "ACCEPT" if accepted else "REJECT"
-            Log.write(f"[Feedback] {st} source={source} sug='{suggestion}' ctx='{context}'")
-
-    def record_accept(self, context: str, suggestion: str, source: Optional[str] = None):
-        self.record(context, suggestion, True, source)
-
-    def record_reject(self, context: str, suggestion: str, source: Optional[str] = None):
-        self.record(context, suggestion, False, source)
-
-    # queries ------------------------------------------------------
-    def acceptance_ratio(self, suggestion: str) -> float:
-        """
-        Returns acceptance ratio for a suggestion (how often a given suggestion has been accepted)
-        Ratio between 0 and 1.
-        A neutral score of 0.5 is returned if no other data is returned.
-        """
-        a = self.accepts.get(suggestion, 0)
-        r = self.rejects.get(suggestion, 0)
-        if (a + r) == 0:
-            return 0.5
-        return a / (a + r)
-
-    def stats(self) -> Dict[str, Any]:
-        """Quick stats summary."""
-        total_events = sum(self.accepts.values()) + sum(self.rejects.values())
-        top_accepted = sorted(self.accepts.items(), key=lambda kv: -kv[1])[:10]
-        top_rejected = sorted(self.rejects.items(), key=lambda kv: -kv[1])[:10]
-        return {
-            "events_in_memory": len(self.buffer),
-            "total_events": total_events,
-            "unique_suggestions_tracked": len(set(list(self.accepts) + list(self.rejects))),
-            "top_accepted": top_accepted,
-            "top_rejected": top_rejected,
+        ev = {
+            "timestamp": ts,
+            "type": event_type,
+            "word": word,
+            "src": src or "",
+            "context": context or "",
         }
 
-    # Persistence --------------------------------------------------
+        self._buffer.append(ev)
+        self._recent.append(ev)
+
+        # update stats
+        if event_type == "accepted":
+            self._accept[word] += 1
+        elif event_type == "rejected":
+            self._reject[word] += 1
+
+        # optional learning hook
+        if self._learner:
+            try:
+                if event_type == "accepted":
+                    self._learner.reward(src)
+                else:
+                    self._learner.penalize(src)
+            except Exception as e:
+                Log.write(f"[Feedback] learner hook failed: {e}")
+
+        if self.verbose:
+            Log.write(f"[Feedback] {event_type.upper()} '{word}' from {src}")
+
+        # opportunistic flush (keeps memory stable)
+        if len(self._buffer) >= self._buffer.maxlen // 2:
+            self.save()
+
+    # Stats/queries -------------------------------------------------------------------------
+    def acceptance_ratio(self, word: str) -> float:
+        """Probability score describing how often a suggestion is accepted."""
+        a = self._accept.get(word, 0)
+        r = self._reject.get(word, 0)
+        total = a + r
+        return (a / total) if total else 0.5
+
+    def stats(self) -> Dict[str, Any]:
+        """Simple stats bundle used by CLI debug view."""
+        total = sum(self._accept.values()) + sum(self._reject.values())
+        return {
+            "total_events": total,
+            "unique_words": len(set(list(self._accept) + list(self._reject))),
+            "top_accepted": sorted(self._accept.items(), key=lambda kv: -kv[1])[:10],
+            "top_rejected": sorted(self._reject.items(), key=lambda kv: -kv[1])[:10],
+        }
+
+    # Persistence ----------------------------------------------------------------------
     def save(self):
-        """Persist buffer to CSV (append)."""
-        if not self.buffer:
+        """Flush buffered events to CSV."""
+        if not self._buffer:
             return
+
+        write_header = not os.path.exists(self.path)
+
         try:
-            first_write = not os.path.exists(self.path)
             with open(self.path, "a", newline="", encoding="utf-8") as fh:
-                writer = csv.DictWriter(fh, fieldnames=["timestamp", "context", "suggestion", "accepted", "source"])
-                if first_write:
+                writer = csv.DictWriter(
+                    fh,
+                    fieldnames=["timestamp", "type", "word", "src", "context"]
+                )
+                if write_header:
                     writer.writeheader()
-                while self.buffer:
-                    ev = self.buffer.popleft()
-                    # ensure accepted is written as True/False
-                    ev = ev.copy()
-                    ev["accepted"] = str(bool(ev["accepted"]))
-                    writer.writerow(ev)
+
+                while self._buffer:
+                    writer.writerow(self._buffer.popleft())
+
             if self.verbose:
-                Log.write(f"[Feedback] flushed events to {self.path}")
+                Log.write(f"[Feedback] flushed to {self.path}")
+
         except Exception as e:
             Log.write(f"[Feedback] save failed: {e}")
 
-    def load_counts(self):
-        """Load existing CSV and reconstruct counts. Does this quietly/with best effort."""
+    def _load_previous(self):
+        """Reconstruct accept/reject counters from disk."""
         if not os.path.exists(self.path):
             return
+
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 reader = csv.DictReader(fh)
                 for row in reader:
-                    sug = row.get("suggestion", "")
-                    accepted = row.get("accepted", "False") == "True"
-                    if accepted:
-                        self.accepts[sug] += 1
-                    else:
-                        self.rejects[sug] += 1
-            Log.write(f"[Feedback] loaded stats from {self.path} (accepted={sum(self.accepts.values())})")
+                    t = (row.get("type") or "").lower()
+                    word = row.get("word") or ""
+                    if t == "accepted":
+                        self._accept[word] += 1
+                    elif t == "rejected":
+                        self._reject[word] += 1
+
+            Log.write(f"[Feedback] loaded historic feedback")
         except Exception as e:
             Log.write(f"[Feedback] load failed: {e}")
 
-    # Convenience/debug -----------------------------------------
-    def dump_recent(self, n: int = 50):
-        """Return the last n recorded events (list of dicts)."""
-        return list(self.recent)[-n:]
-
-            Log.write(f"[Feedback] Error loading feedback: {e}")
+    # Debug helpers -------------------------------------------------------------------
+    def dump_recent(self, n: int = 50) -> List[Dict[str, Any]]:
+        """Return the last n in-memory events."""
+        return list(self._recent)[-n:]
