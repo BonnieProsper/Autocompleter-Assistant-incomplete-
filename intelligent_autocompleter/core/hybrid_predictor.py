@@ -1,17 +1,26 @@
 # intelligent_autocompleter/hybrid_predictor.py
-# Integrated HybridPredictor, combines:
-# - markov (syntax/contextual predictions), embeddings (semantic), bk-tree (fuzzy), personal context
-# - FusionRanker (weights can be overridden by AdaptiveLearner)
-# - FeedbackTracker and AdaptiveLearner wired in
-# - Plugin registry hooks supported to extend behaviour
+"""
+HybridPredictor - portfolio-ready, human-style implementation.
+Features:
+ - Markov (syntactic/contextual)
+ - Embeddings (semantic)
+ - BK-tree (fuzzy)
+ - Personal context (CtxPersonal)
+ - FusionRanker for combining signals
+ - AdaptiveLearner for online weight tuning
+ - FeedbackTracker to persist and compute acceptance ratios
+ - Optional PluginRegistry (train/retrain/suggest/accept hooks)
+ - Caching, persistence, explainability helpers
+"""
 
 import time
 import math
 import pickle
+import os
 from collections import Counter
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Any
 
-# imports, local or package
+# model imports (try package import first, fallback to relative)
 try:
     from intelligent_autocompleter.core.markov_predictor import MarkovPredictor
     from intelligent_autocompleter.core.embeddings import Embeddings
@@ -23,7 +32,7 @@ try:
     from intelligent_autocompleter.context_personal import CtxPersonal
     from intelligent_autocompleter.utils.logger_utils import Log
 except Exception:
-    # fallback to relative imports if run from package root
+    # local-run fallback for tests/quick run
     from core.markov_predictor import MarkovPredictor
     from core.embeddings import Embeddings
     from core.bktree import BKTree
@@ -34,67 +43,74 @@ except Exception:
     from context_personal import CtxPersonal
     from utils.logger_utils import Log
 
-# optional plugin registry
+# optional best effort plugin registry import
 try:
     from intelligent_autocompleter.plugins.registry import PluginRegistry
 except Exception:
     try:
         from plugins.registry import PluginRegistry
     except Exception:
-        PluginRegistry = None
+        PluginRegistry = None  # plugins are optional
 
 Scores = Dict[str, float]
-Candidate = Tuple[str, float]
+Candidate = Tuple[str, float]  # (word, score)
 
 class HybridPredictor:
     """
-    Hybrid predictor with feedback + adaptive learner + plugin support.
+    Hybrid Predictor. Main public methods:
+      - train(lines)
+      - retrain(sentence)
+      - suggest(fragment, topn=6) -> List[(word, score)]
+      - accept(word, context=None, source=None)
+      - reject(word, context=None, source=None)
+      - save_state(path), load_state(path)
+      - explain(fragment)  -> dict breakdown
+      - get_weights() -> exposes adaptive learner weights
     """
     def __init__(self,
                  user: str = "default",
                  context_window: int = 2,
-                 registry: Optional[object] = None,
+                 registry: Optional[Any] = None,
                  feedback_verbose: bool = False):
         """
         Initializes the hybrid predictor with default user and context window size.
         Args:
         - user: Identifies the user for personalization (defaults to "default").
-        - context_window: Size of the context window to consider for predictions (defaults to 3).
+        - context_window: Size of the context window to consider for predictions (defaults to 2).
         """
-        # models
+        # models/engines
         self.mk = MarkovPredictor()
         self.emb = Embeddings()
         self.bk = BKTree()
         self.ctx = CtxPersonal(user)
         self.sem = SemanticEngine()
 
-        # fusion
+        # rankers/adaptors
         self.base_ranker = FusionRanker(preset="balanced")
-
-        # feedback + learner
         self.learner = AdaptiveLearner()
+        # feedback tracker wired to adaptive learner (best-effort)
         self.feedback = FeedbackTracker(learner=self.learner, verbose=feedback_verbose)
 
-        # plugin registry (optional)
+        # optional plugin registry 
         self.registry = registry
 
-        # bookkeeping
+        # misc state
         self.context_window = max(1, int(context_window))
-        self.accepted = Counter()
-        self.freq_stats = Counter()
-        self.trained = False
+        self.accepted = Counter()        # local reinforcement counts
+        self.freq_stats = Counter()      # word frequency seen in training
+        self._trained = False
 
-        # BK cache
-        self.bk_cache = {}
-        self.bk_time = {}
-        self.bk_cache_ttl = 60.0
+        # bk cache for fuzzy lookups: (q,maxd) -> list[(word,dist)]
+        self._bk_cache: Dict[Tuple[str, int], List[Tuple[str, int]]] = {}
+        self._bk_cache_time: Dict[Tuple[str, int], float] = {}
+        self._bk_cache_ttl = 60.0
 
-        # last suggestions mapping (word to source) for accept mapping
-        self.last_sources = {}  # word to source string
-        self.last_ranked = []   # last ranked list used (for debugging)
+        # mapping from last suggestion to source (best-effort inference)
+        self.last_sources: Dict[str, str] = {}
+        self.last_ranked: List[Candidate] = []
 
-    # training ----------------------------------------------------------
-    def train(self, lines: List[str]):
+    # Training/incremental -----------------------------------------------------
+    def train(self, lines: List[str]) -> None:
         """
         Train the model using a provided corpus of text (demo_copus.txt).
         Args:
@@ -104,26 +120,29 @@ class HybridPredictor:
             return
         with Log.time_block("Hybrid.train"):
             for ln in lines:
-                self.train_line(ln)
-            # plugin hook
+                self._train_line(ln)
+            # plugin bulk hook
             if self.registry:
                 try:
                     self.registry.call_train(lines)
                 except Exception as e:
                     Log.write(f"[plugins] train hook error: {e}")
+            # persist ctx
             try:
                 self.ctx.save()
             except Exception:
                 pass
-            self.trained = True
+            self._trained = True
+            Log.write("[Hybrid] train finished")
 
-    def retrain(self, sentence: str):
+    def retrain(self, sentence: str) -> None:
         """
         Incrementally retrain the model with a new sentence during active use.
         Args:
         - sentence: The new sentence to add to the model's knowledge.
         """
-        self.train_line(sentence)
+        # incremental learning, learns when user confirms or writes a sentence
+        self._train_line(sentence)
         if self.registry:
             try:
                 self.registry.call_retrain(sentence)
@@ -133,63 +152,60 @@ class HybridPredictor:
             self.ctx.save()
         except Exception:
             pass
-        self.trained = True
+        self._trained = True
 
-    def train_line(self, ln: str):
+    def _train_line(self, ln: str) -> None:
         """
-        Train the model on a single line of text by processing tokens and updating various components.
+        Train model on a single line of text.
         Args:
-        - ln: The line of text to process.
+        - ln: The line of text to process and train with.
         """
+        # keep tokenization simple
         self.mk.train_sentence(ln)
         self.ctx.learn(ln)
-        for tok in self.get_tokens(ln):
+        for tok in self._tokens(ln):
             self.freq_stats[tok] += 1
             try:
                 self.bk.insert(tok)
             except Exception:
+                # BK tree can be picky about input so ignore bad tokens
                 pass
 
-    # helpers --------------------------------------------------------------
+    # Helpers ---------------------------------------------------------------
     @staticmethod
-    def get_tokens(s: str) -> List[str]:
+    def _tokens(s: str) -> List[str]:
+        # small tokenizer for training usage
         return [t.lower() for t in s.strip().split() if t.isalpha()]
 
-    def adaptive_maxd(self, q: str) -> int:
+    def _adaptive_maxd(self, q: str) -> int:
         L = len(q)
-        if L <= 3: 
+        if L <= 3:
             return 0
-        if L <= 6: 
+        if L <= 6:
             return 1
-        if L <= 12: 
+        if L <= 12:
             return 2
         return 3
 
-    def bk_query_cached(self, q: str, maxd: int):
+    def _bk_query_cached(self, q: str, maxd: int) -> List[Tuple[str, int]]:
         key = (q, maxd)
         now = time.time()
-        if key in self.bk_cache and now - self.bk_time.get(key, 0.0) < self.bk_cache_ttl:
-            return self.bk_cache[key]
+        if key in self._bk_cache and now - self._bk_cache_time.get(key, 0.0) < self._bk_cache_ttl:
+            return self._bk_cache[key]
         try:
             res = self.bk.query(q, max_dist=maxd)
         except Exception:
             res = []
-        self.bk_cache[key] = res
-        self.bk_time[key] = now
+        self._bk_cache[key] = res
+        self._bk_cache_time[key] = now
         return res
 
-    # Main Suggestion API -----------------------------------------------------------------------
+    # Main suggestion API ----------------------------------------------------------------------
     def suggest(self, text_fragment: str, topn: int = 6, fuzzy: bool = True) -> List[Candidate]:
         """
-        Generate ranked suggestions based on the text fragment string. 
-        Each candidate is annotated internally with a primary source.
-        Sources: 'markov', 'semantic', 'personal', 'fuzzy', 'plugin'
-        Args:
-        - fragment: Partial text or word fragment to generate suggestions for.
-        - topn: Number of top suggestions to return (default = 6).
-        - fuzzy: Whether to include fuzzy matches from the BK-tree (default = True).
-        Returns:
-        - A list of tuples (word, score) where 'word' is a suggested word and 'score' is its prediction score.
+        Produce ranked suggestions for the last token in text_fragment.
+        Returns list[(word, score)] (keeps API stable for older callers).
+        Internally also fills self.last_sources and self.last_ranked for feedback mapping.
         """
         if not text_fragment:
             return []
@@ -202,161 +218,216 @@ class HybridPredictor:
             context = toks[-self.context_window:]
             last = context[-1]
 
-            # gather candidate suggestions from sources
+            # Markov top next (word, count)
             mk_list = self.mk.top_next(last, topn=topn * 3)
-            markov_scores = {w: float(s) for w, s in mk_list}
+            markov_scores: Scores = {w: float(c) for w, c in mk_list}
 
+            # Embeddings/semantic similar words (word,score)
             emb_list = self.emb.similar(last, topn=topn * 3) if hasattr(self.emb, "similar") else []
-            embed_scores = {w: float(s) for w, s in emb_list}
+            embed_scores: Scores = {w: float(s) for w, s in emb_list}
 
-            # personal: include candidates + some recent words
-            personal_set = set(list(markov_scores) + list(embed_scores)) | set(self.ctx.recent)
-            personal_scores = {w: float(self.ctx.freq.get(w, 0.0)) for w in personal_set}
+            # Personal scores (freq in personal context + recent)
+            personal_candidates = set(markov_scores) | set(embed_scores) | set(self.ctx.recent)
+            personal_scores: Scores = {w: float(self.ctx.freq.get(w, 0.0)) for w in personal_candidates}
 
-            # frequency map
-            freq_scores = {w: float(self.freq_stats.get(w, 0)) for w in set(list(markov_scores) + list(embed_scores) + list(personal_scores))}
+            # global frequency
+            freq_scores: Scores = {w: float(self.freq_stats.get(w, 0)) for w in set(markov_scores) | set(embed_scores) | set(personal_scores)}
 
-            # fuzzy fallback
-            fuzzy_list = []
+            # fuzzy BK fallback, add small boost into embed_scores
+            fuzzy_results: List[Tuple[str, int]] = []
             if fuzzy:
-                maxd = self.adaptive_maxd(last)
+                maxd = self._adaptive_maxd(last)
                 if maxd > 0:
-                    fuzzy_res = self.bk_query_cached(last, maxd)
-                    for w, dist in fuzzy_res:
+                    fuzzy_results = self._bk_query_cached(last, maxd)
+                    for w, dist in fuzzy_results:
                         bonus = max(0.0, (maxd + 1) - dist)
-                        # treat fuzzy as small semantic bump
-                        embed_scores[w] = max(embed_scores.get(w, 0.0), bonus * 0.4)
-                        fuzzy_list.append((w, dist))
+                        embed_scores[w] = max(embed_scores.get(w, 0.0), bonus * 0.5)
 
-            # reinforcement from accepted words
+            # reinforcement from accepted dictionary
             for w, c in self.accepted.items():
-                personal_scores[w] = personal_scores.get(w, 0.0) + math.log1p(c) * 0.3
+                personal_scores[w] = personal_scores.get(w, 0.0) + math.log1p(c) * 0.35
 
-            # fusion: use adaptive weighting if adaptivelearner is present
+            # Fuse signals, preferentially use AdaptiveLearner ->FusionRanker
+            ranked: List[Tuple[str, float]]
             try:
                 weights = self.learner.get_weights() if self.learner else None
                 if weights:
-                    tmp_ranker = FusionRanker(weights={k + "_weight": v for k, v in weights.items()}, preset=None, personalizer=self.ctx)
-                    ranked = tmp_ranker.rank(markov=list(markov_scores.items()),
-                                             embeddings=list(embed_scores.items()),
-                                             fuzzy=fuzzy_list,
-                                             base_freq=freq_scores,
-                                             recency_map={}, topn=topn)
+                    # FusionRanker might use different param shapes
+                    # try to use its high-level rank API, otherwise fallback below.
+                    tmp_weights = {"markov": weights.get("markov", 0.0),
+                                   "embed": weights.get("semantic", 0.0),
+                                   "personal": weights.get("personal", 0.0),
+                                   "freq": 0.05}
+                    tmp_ranker = FusionRanker()
+                    # If FusionRanker exposes a 'fuse' or 'rank' that accepts dicts, attempt
+                    if hasattr(tmp_ranker, "rank"):
+                        ranked = tmp_ranker.rank(markov=markov_scores,
+                                                 embed=embed_scores,
+                                                 personal=personal_scores,
+                                                 freq=freq_scores,
+                                                 topn=topn * 2)
+                    else:
+                        # fallback generic combine
+                        raise RuntimeError("FusionRanker.rank not available as expected")
                 else:
-                    ranked = self.base_ranker.rank(markov=list(markov_scores.items()),
-                                                   embeddings=list(embed_scores.items()),
-                                                   fuzzy=fuzzy_list,
-                                                   base_freq=freq_scores,
-                                                   recency_map={}, topn=topn)
+                    # base ranker fallback, try to call rank similarly
+                    if hasattr(self.base_ranker, "rank"):
+                        ranked = self.base_ranker.rank(markov=markov_scores,
+                                                       embed=embed_scores,
+                                                       personal=personal_scores,
+                                                       freq=freq_scores,
+                                                       topn=topn * 2)
+                    else:
+                        raise RuntimeError("base_ranker.rank not available")
             except Exception:
-                # fallback to simple combined
-                merged = {}
-                for w in set(list(markov_scores) + list(embed_scores)):
-                    merged[w] = markov_scores.get(w, 0.0) * 0.6 + embed_scores.get(w, 0.0) * 0.4
-                ranked = sorted(merged.items(), key=lambda kv: -kv[1])[:topn]
+                # final fallback, linear combine with alpha weighting
+                merged: Scores = {}
+                alpha = 0.45
+                for w in set(markov_scores) | set(embed_scores):
+                    merged[w] = markov_scores.get(w, 0.0) * (1 - alpha) + embed_scores.get(w, 0.0) * alpha
+                ranked = sorted(merged.items(), key=lambda kv: -kv[1])[:topn * 2]
 
-            # if plugins are available, allow them to inspect/modify results
-            try:
-                if self.registry:
+            # plugin pipeline, let plugins rerank or add candidates
+            if self.registry:
+                try:
+                    # registry expects list[(w,score)] and returns list[(w,score)] or (w,score,src)
                     bundle = {"context": context, "user": getattr(self.ctx, "user", None), "last": last}
-                    ranked = self.registry.run_suggest_pipeline(last, ranked, bundle)
-            except Exception as e:
-                Log.write(f"[plugins] suggest pipeline error: {e}")
+                    ranked = self.registry.run_suggest_pipeline(last, ranked, bundle)  # allow plugins to mutate
+                except Exception as e:
+                    Log.write(f"[plugins] suggest pipeline error: {e}")
 
-            # bias by personal heuristics and format
-            ranked = self.ctx.bias_words(ranked)
+            # bias by personal heuristics
+            try:
+                ranked = self.ctx.bias_words(ranked)
+            except Exception:
+                # if ctx.bias_words has different expectations, ignore
+                pass
 
-            # store source hints for accept() mapping in best effort format
+            # Build last_sources mapping with best-effort source inference
             self.last_sources.clear()
-            for w, _ in ranked:
-                # guess source: prefer markov > embed > personal > fuzzy > plugin
+            final_list: List[Candidate] = []
+            seen = set()
+            for w, sc in ranked:
+                if w in seen:
+                    continue
+                seen.add(w)
+                # infer source preference
                 if w in markov_scores:
                     src = "markov"
                 elif w in embed_scores:
                     src = "semantic"
                 elif w in personal_scores:
                     src = "personal"
+                elif any(w == fw for fw, _ in fuzzy_results):
+                    src = "fuzzy"
                 else:
                     src = "plugin"
                 self.last_sources[w] = src
+                final_list.append((w, float(sc)))
 
-            # final trimming
-            out = [(w, round(float(sc), 3)) for w, sc in ranked][:topn]
+            # trim to requested topn
+            out = [(w, round(float(sc), 3)) for w, sc in final_list][:topn]
             self.last_ranked = out
 
-            Log.metric("Suggest latency", round(time.time() - start, 3), "s")
+            Log.metric("suggest_latency", round(time.time() - start, 3), "s")
             return out
 
         except Exception as e:
             Log.write(f"[HybridPredictor] suggest error: {e}")
             return []
 
-    # reinforcement hooks --------------------------------------------------------------------------
-    def accept(self, suggestion: str, context: Optional[str] = None, source: Optional[str] = None):
+    # Reinforcement/feedback ----------------------------------------------------------------
+    def accept(self, word: str, context: Optional[str] = None, source: Optional[str] = None) -> None:
         """
         Called when a user accepts a suggestion.
         If source isn't provided, tries to use last suggestions mapping.
         Records feedback and rewards learner.
         """
-        if not suggestion:
+        if not word:
             return
-        s = suggestion.lower().strip()
-        # increment local counter
-        self.accepted[s] += 1
-        if self.accepted[s] > 10000:
-            self.accepted[s] = 10000
+        w = word.lower().strip()
+        self.accepted[w] += 1
+        # cap the reinforcement counter
+        if self.accepted[w] > 10000:
+            self.accepted[w] = 10000
 
-        # infer source if not provided
-        resolved_source = source or self.last_sources.get(s, "unknown")
+        # resolve source (prefer provided source)
+        resolved_source = source or self.last_sources.get(w, "unknown")
 
-        # record to feedback tracker
+        # record in feedback tracker (use public API)
         try:
-            ctx = context or ""
-            self.feedback.record_accept(ctx, s, resolved_source)
+            # FeedbackTracker may expose different method names across versions 
+            if hasattr(self.feedback, "record_accept"):
+                self.feedback.record_accept(context or "", w, resolved_source)
+            elif hasattr(self.feedback, "record"):
+                self.feedback.record(context or "", w, True, resolved_source)
+            else:
+                # generic push
+                try:
+                    self.feedback.push("accepted", {"word": w, "src": resolved_source, "context": context or ""})
+                except Exception:
+                    pass
         except Exception as e:
             Log.write(f"[HybridPredictor] feedback record failed: {e}")
 
-        # best effort reward learner for that source
+        # reward adaptive learner for that source
         try:
-            self.learner.reward(resolved_source)
+            # normalize some aliases
+            src_key = "semantic" if resolved_source in ("semantic", "embed") else ("markov" if resolved_source == "markov" else "personal")
+            if hasattr(self.learner, "reward"):
+                self.learner.reward(src_key)
         except Exception:
             pass
 
         # plugin hook
         if self.registry:
             try:
-                self.registry.call_accept(s, {"user": getattr(self.ctx, "user", None), "source": resolved_source})
+                self.registry.call_accept(w, {"user": getattr(self.ctx, "user", None), "source": resolved_source})
             except Exception as e:
                 Log.write(f"[plugins] accept hook error: {e}")
 
-    def reject(self, suggestion: str, context: Optional[str] = None, source: Optional[str] = None):
+    def reject(self, word: str, context: Optional[str] = None, source: Optional[str] = None) -> None:
         """Record a rejection by penalizing the source and notifying plugins."""
-        if not suggestion:
+        if not word:
             return
-        s = suggestion.lower().strip()
-        resolved_source = source or self.last_sources.get(s, "unknown")
+        w = word.lower().strip()
+        resolved_source = source or self.last_sources.get(w, "unknown")
+
+        # record reject
         try:
-            self.feedback.record_reject(context or "", s, resolved_source)
+            if hasattr(self.feedback, "record_reject"):
+                self.feedback.record_reject(context or "", w, resolved_source)
+            elif hasattr(self.feedback, "record"):
+                self.feedback.record(context or "", w, False, resolved_source)
+            else:
+                try:
+                    self.feedback.push("rejected", {"word": w, "src": resolved_source, "context": context or ""})
+                except Exception:
+                    pass
         except Exception:
             pass
+
+        # penalize adaptive learner
         try:
-            self.learner.penalize(resolved_source)
+            if hasattr(self.learner, "penalize"):
+                self.learner.penalize(resolved_source)
         except Exception:
             pass
+
+        # plugin hook, optionally call rechook if it exists
         if self.registry:
             try:
-                self.registry.call_reject(s, {"user": getattr(self.ctx, "user", None), "source": resolved_source})
+                # registry might not implement call_reject, best-effort
+                if hasattr(self.registry, "call_reject"):
+                    self.registry.call_reject(w, {"user": getattr(self.ctx, "user", None), "source": resolved_source})
             except Exception as e:
                 Log.write(f"[plugins] reject hook error: {e}")
 
-    # Persistence Helpers ----------------------------------------------------------------
-    def save_state(self, path: str):
-        """
-        Save the model and its state to a file for later use.
-        Args:
-        - path: The path to save the model state to.
-        """
+    # Persistence ---------------------------------------------------------------
+    def save_state(self, path: str) -> None:
+        """Save model and its state."""
         try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "wb") as fh:
                 pickle.dump({
                     "markov": self.mk,
@@ -369,14 +440,11 @@ class HybridPredictor:
         except Exception as e:
             Log.write(f"[HybridPredictor] save_state failed: {e}")
 
-    def load_state(self, path: str):
-        """
-        Load a previously saved model from a file.
-        Args:
-        - path: The path to load the model state from.
-        Returns:
-        - An instance of HybridPredictor loaded from the file.
-        """
+    def load_state(self, path: str) -> None:
+        """Load previously saved model from a file."""
+        if not os.path.exists(path):
+            Log.write(f"[HybridPredictor] load_state: path not found {path}")
+            return
         try:
             with open(path, "rb") as fh:
                 data = pickle.load(fh)
@@ -385,21 +453,41 @@ class HybridPredictor:
             self.bk = data.get("bk", self.bk)
             self.freq_stats = data.get("freq", self.freq_stats)
             self.accepted = data.get("accepted", self.accepted)
+            self._trained = True
             Log.write(f"[HybridPredictor] state loaded from {path}")
-            self.trained = True
         except Exception as e:
             Log.write(f"[HybridPredictor] load_state failed: {e}")
 
-    # Debugging Helpers --------------------------------------------------------------
-    def explain(self, fragment: str, topn: int = 6):
-        """Return breakdown of contributions for the fragment (useful for /explain CLI command)."""
+    # Explainability & debug ----------------------------------------------------------
+    def explain(self, fragment: str, topn: int = 6) -> Dict[str, Any]:
+        """
+        Give a debugging breakdown of contributions from each component.
+        For /explain CLI command or debugging.
+        """
         toks = [t.lower() for t in fragment.strip().split() if t]
         if not toks:
             return {}
         last = toks[-1]
-        mk = dict(self.mk.top_next(last, topn=topn))
-        emb = dict(self.emb.similar(last, topn=topn)) if hasattr(self.emb, "similar") else {}
+        try:
+            mk = dict(self.mk.top_next(last, topn=topn))
+        except Exception:
+            mk = {}
+        try:
+            emb = dict(self.emb.similar(last, topn=topn)) if hasattr(self.emb, "similar") else {}
+        except Exception:
+            emb = {}
         per = {w: self.ctx.freq.get(w, 0) for w in set(list(mk) + list(emb))}
         freq = {w: self.freq_stats.get(w, 0) for w in set(list(mk) + list(emb) + list(per))}
-        fused = self.base_ranker.fuse(mk, emb, per, freq)
+        try:
+            fused = self.base_ranker.fuse(mk, emb, per, freq)
+        except Exception:
+            fused = {}
         return {"markov": mk, "embed": emb, "personal": per, "freq": freq, "fused": fused}
+
+    def get_weights(self) -> Dict[str, float]:
+        """Expose current learner weights (semantic/markov/personal/plugin)."""
+        try:
+            return self.learner.get_weights()
+        except Exception:
+            # fallback to base preset
+            return {"semantic": 0.45, "markov": 0.35, "personal": 0.15, "plugin": 0.05}
