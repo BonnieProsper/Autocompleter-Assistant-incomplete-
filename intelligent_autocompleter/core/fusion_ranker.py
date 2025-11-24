@@ -1,139 +1,176 @@
 # fusion_ranker.py
-# intelligent_autocompleter/core/fusion_ranker.py
-#
-# Simple, testable fusion ranker that normalizes signals and combines them
-# using named presets. Designed to be small, readable and easy to tweak.
-#
-# Signals supported:
-#  - markov: list[(word, count)]
-#  - embeddings: list[(word, score)]
-#  - fuzzy: list[(word, distance)]  (smaller = better)
-#  - base_freq: dict[word -> int]
-#  - recency_map: dict[word -> epoch_ts]
-#
-# The personalizer (optional) should implement `bias_words(list[(w,score)]) -> list[(w,score)]`.
+# Unified fusion layer for Autocompleter Assistant. - redundant because of hybrid predictor?
+# Merges signals from:
+#  - Markov predictions
+#  - Embedding similarity
+#  - Fuzzy distance (BK-tree)
+#  - Base word frequency
+#  - Recency weighting
+#   - optional personalization plugin
 
-from typing import Dict, Iterable, List, Tuple, Optional
+from __future__ import annotations
+from typing import Dict, Iterable, List, Tuple, Optional, Set
 from collections import defaultdict
 import math
+import logging
+
+logger = logging.getLogger(__name__)
 
 CandidateList = List[Tuple[str, float]]
 FuzzyList = List[Tuple[str, int]]
 
-
-def _minmax_scale(vals: Iterable[float]) -> List[float]:
-    vals = list(vals)
-    if not vals:
+# Utility transforms---------------------------------------------------------
+def _minmax_scale(values: Iterable[float]) -> List[float]:
+    """Normalize numeric values to [0,1]."""
+    values = list(values)
+    if not values:
         return []
-    lo, hi = min(vals), max(vals)
+    lo, hi = min(values), max(values)
     if hi == lo:
-        return [1.0 for _ in vals]
-    return [(v - lo) / (hi - lo) for v in vals]
+        return [1.0 for _ in values]
+    return [(v - lo) / (hi - lo) for v in values]
+
+def _log1p(values: Iterable[float]) -> List[float]:
+    """Apply log(1+x) element-wise with safety against negatives."""
+    return [math.log1p(max(0.0, float(v))) for v in values]
 
 
-def _log_plus_one(vals: Iterable[float]) -> List[float]:
-    return [math.log1p(max(0.0, float(v))) for v in vals]
 
-
+# FusionRanker ---------------------------------------------------------------
 class FusionRanker:
+    """
+    A multi-signal ranker that blends Markov, embedding, fuzzy,
+    frequency, and recency scores using normalized weights.
+
+    Rank pipeline is:
+     - Gather union of all candidate words.
+     - Compute per-signal raw value for each candidate.
+     - Apply transform (log-scale, invert distance, etc).
+     - Min-max normalize every signal -> [0,1].
+     - Weighted sum of all signals.
+     - Optional personalization pass.
+     - Return top-N words.
+     
+    PRESETS have tuned weight profiles for different behaviour:
+    strict    =  (prefix & Markov heavy)
+    balanced  =  (best general behaviour)
+    creative  =  (semantic exploration)
+    personal  =  (heavily biased to user history)
+    """
     PRESETS = {
-        "strict":   {"markov": 0.6, "embed": 0.1, "fuzzy": 0.05, "freq": 0.2, "personal": 0.05},
-        "balanced": {"markov": 0.4, "embed": 0.3, "fuzzy": 0.1,  "freq": 0.15, "personal": 0.05},
-        "creative": {"markov": 0.2, "embed": 0.6, "fuzzy": 0.05, "freq": 0.05, "personal": 0.1},
-        "personal": {"markov": 0.25,"embed": 0.25,"fuzzy": 0.05, "freq": 0.1, "personal": 0.35},
+        "strict":   {"markov": 0.6, "embed": 0.1, "fuzzy": 0.05,
+                     "freq": 0.2, "personal": 0.05},
+        "balanced": {"markov": 0.4, "embed": 0.3, "fuzzy": 0.1,
+                     "freq": 0.15, "personal": 0.05},
+        "creative": {"markov": 0.2, "embed": 0.6, "fuzzy": 0.05,
+                     "freq": 0.05, "personal": 0.1},
+        "personal": {"markov": 0.25, "embed": 0.25, "fuzzy": 0.05,
+                     "freq": 0.1, "personal": 0.35},
     }
 
-    def __init__(self,
-                 weights: Optional[Dict[str, float]] = None,
-                 preset: str = "balanced",
-                 personalizer: Optional[object] = None):
-        base = dict(self.PRESETS.get(preset, self.PRESETS["balanced"]))
+    def __init__(
+        self,
+        weights: Optional[Dict[str, float]] = None,
+        preset: str = "balanced",
+        personalizer: Optional[object] = None,
+    ):
+        base_weights = dict(self.PRESETS.get(preset, self.PRESETS["balanced"]))
+
         if weights:
-            base.update(weights)
-        s = sum(base.values()) or 1.0
-        # normalize to sum to 1.0
-        self.w = {k: float(v) / s for k, v in base.items()}
+            base_weights.update(weights)
+
+        total = sum(base_weights.values()) or 1.0
+        self.weights = {k: v / total for k, v in base_weights.items()}
         self.personalizer = personalizer
 
-    def rank(self,
-             markov: Optional[CandidateList] = None,
-             embeddings: Optional[CandidateList] = None,
-             fuzzy: Optional[FuzzyList] = None,
-             base_freq: Optional[Dict[str, int]] = None,
-             recency_map: Optional[Dict[str, float]] = None,
-             topn: int = 8) -> CandidateList:
+    # Core ranking -----------------------------------------------------------------
+    def rank(
+        self,
+        markov: Optional[CandidateList] = None,
+        embeddings: Optional[CandidateList] = None,
+        fuzzy: Optional[FuzzyList] = None,
+        base_freq: Optional[Dict[str, int]] = None,
+        recency_map: Optional[Dict[str, float]] = None,
+        topn: int = 8,) -> CandidateList:
         markov = markov or []
         embeddings = embeddings or []
         fuzzy = fuzzy or []
         base_freq = base_freq or {}
         recency_map = recency_map or {}
 
-        # collect candidate set
-        cand = set()
-        cand.update([w for w, _ in markov])
-        cand.update([w for w, _ in embeddings])
-        cand.update([w for w, _ in fuzzy])
-        cand.update(base_freq.keys())
-        if not cand:
+        # Collect candidate word set
+        candidates: Set[str] = set()
+        candidates.update([w for w, _ in markov])
+        candidates.update([w for w, _ in embeddings])
+        candidates.update([w for w, _ in fuzzy])
+        candidates.update(base_freq.keys())
+        if not candidates:
             return []
 
-        # maps for quick lookup
-        m_map = {w: c for w, c in markov}
-        e_map = {w: s for w, s in embeddings}
-        f_map = {w: d for w, d in fuzzy}
-        freq_map = dict(base_freq)
-        rec_map = dict(recency_map)
+        # lookup maps
+        M = {w: v for w, v in markov}
+        E = {w: v for w, v in embeddings}
+        F = {w: d for w, d in fuzzy}
+        FREQ = base_freq
+        REC = recency_map
 
-        # normalize each signal into [0,1]
-        # markov: log1p -> minmax
-        m_vals = _log_plus_one([m_map.get(w, 0) for w in cand])
-        m_norm = dict(zip(list(cand), _minmax_scale(m_vals)))
+        cand_list = list(candidates)
 
-        # embeddings: direct minmax
-        e_vals = [float(e_map.get(w, 0.0)) for w in cand]
-        e_norm = dict(zip(list(cand), _minmax_scale(e_vals)))
+        # Prepare raw signal vectors
+        # Markov → log1p -> minmax
+        m_raw = _log1p([M.get(w, 0) for w in cand_list])
+        m_norm = dict(zip(cand_list, _minmax_scale(m_raw)))
 
-        # fuzzy: convert dist -> similarity (1/(1+dist)) then minmax
-        f_raw = [1.0 / (1.0 + float(f_map.get(w, 999))) if w in f_map else 0.0 for w in cand]
-        f_norm = dict(zip(list(cand), _minmax_scale(f_raw)))
+        # Embeddings → direct minmax
+        e_norm = dict(zip(
+            cand_list,
+            _minmax_scale([float(E.get(w, 0.0)) for w in cand_list])
+        ))
 
-        # freq: log1p -> minmax
-        freq_vals = _log_plus_one([freq_map.get(w, 0) for w in cand])
-        freq_norm = dict(zip(list(cand), _minmax_scale(freq_vals)))
+        # Fuzzy → invert distance -> minmax
+        f_raw = [
+            1.0 / (1.0 + float(F.get(w, 999))) if w in F else 0.0
+            for w in cand_list
+        ]
+        f_norm = dict(zip(cand_list, _minmax_scale(f_raw)))
 
-        # recency: newer -> higher. rec_map should have epoch timestamps.
+        # Frequency → log1p -> minmax
+        freq_norm = dict(zip(
+            cand_list,
+            _minmax_scale(_log1p([FREQ.get(w, 0) for w in cand_list]))
+        ))
+
+        # Recency → log-age inversion -> minmax
+        if REC:
+            newest = max(REC.values())
         rec_raw = []
-        now = max(rec_map.values()) if rec_map else None
-        for w in cand:
-            if now and w in rec_map:
-                age = max(0.0, now - rec_map[w])
+        for w in cand_list:
+            if REC and w in REC:
+                age = max(0.0, newest - REC[w])
                 rec_raw.append(1.0 / (1.0 + math.log1p(age)))
             else:
                 rec_raw.append(0.0)
-        rec_norm = dict(zip(list(cand), _minmax_scale(rec_raw)))
+        rec_norm = dict(zip(cand_list, _minmax_scale(rec_raw)))
 
-        # combine with weights
-        scores = {}
-        for w in cand:
+        # Weighted combination
+        scores: Dict[str, float] = {}
+        for w in cand_list:
             s = 0.0
-            s += self.w.get("markov", 0.0) * m_norm.get(w, 0.0)
-            s += self.w.get("embed", 0.0)  * e_norm.get(w, 0.0)
-            s += self.w.get("fuzzy", 0.0)  * f_norm.get(w, 0.0)
-            s += self.w.get("freq", 0.0)   * freq_norm.get(w, 0.0)
-            # recency separate key (optional)
-            s += (self.w.get("recency", 0.0) * rec_norm.get(w, 0.0)) if "recency" in self.w else 0.0
-            # leave 'personal' weight to personalizer post-step
-            scores[w] = float(s)
+            s += self.weights.get("markov", 0.0) * m_norm.get(w, 0.0)
+            s += self.weights.get("embed", 0.0) * e_norm.get(w, 0.0)
+            s += self.weights.get("fuzzy", 0.0) * f_norm.get(w, 0.0)
+            s += self.weights.get("freq", 0.0) * freq_norm.get(w, 0.0)
+            s += self.weights.get("recency", 0.0) * rec_norm.get(w, 0.0)
+            scores[w] = s
+        ranked = sorted(scores.items(), key=lambda t: -t[1])
 
-        # convert to list and post-process personalization if available
-        ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+        # Optional personalization pass
         if self.personalizer:
             try:
                 ranked = self.personalizer.bias_words(ranked)
-            except Exception:
-                # personalizer is optional; if it fails, keep original ranking
-                pass
+            except Exception as e:
+                logger.warning(f"Personalizer failed: {e}")
 
-        ranked = sorted(ranked, key=lambda kv: -kv[1])
-        return [(w, round(float(sc), 4)) for w, sc in ranked[:topn]]
+        # final sort & return
+        return [(w, round(float(s), 4)) for w, s in ranked[:topn]]
 
