@@ -1,181 +1,176 @@
 # autocompleter.py
-# Orchestration core to load/save model state, tie HybridPredictor to persistence, small API for the CLI.
-# combines other files
+# Orchestration layer for the Autocompleter system.
+# Purpose:
+#  - own HybridPredictor instance
+#  - load persisted Markov transitions + user history
+#  - friendly API for CLI/TUI/tests
+#  - manage autosave + lifecycle shutdown (is this needed e.g is already in cli?/tui?)
+# intentionally avoids algorithmic details, those go inside predictors and context modules.
 
 import atexit
 import time
-from collections import defaultdict, Counter
 from pathlib import Path
+from collections import defaultdict, Counter
 
 from hybrid_predictor import HybridPredictor
-from markov_predictor import MarkovPredictor
-from context_personal import CtxPersonal
 from logger_utils import Log
-from model_store import (
-    load_markov,
-    save_markov,
-    load_user_cache,
-    save_user_cache,
-)
-
+from model_store import (load_markov, save_markov, load_user_cache, save_user_cache,)
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
 class AutoCompleter:
     """
-    Wrapper:
-     - initialise HybridPredictor
-     - restore saved markov table + user cache at start
-     - saves on exit
-     - simple api for cli/tests
+    Main application façade.
+    This wraps the full predictive stack and provides a clean API:
+     - suggest(prefix)
+     - train_lines(lines)
+     - retrain(sentence)
+     - accept(word)
+     - stats()
+    It also handles persistence and session lifecycle.
     """
-
-    def __init__(self, user="default"):
+    def __init__(self, user: str = "default"):
         self.user = user
-        Log.write("Autocompleter init")
-        # main predictive engine (combines markov, embeddings and personalization)
+        Log.write(f"[init] Autocompleter boot for user='{user}'")
+
+        # HybridPredictor combines Markov, semantic, trie, etc
         self.hp = HybridPredictor(user=user)
 
-        # keep a handle to raw markov predictor for persistence tweaks
-        self.mk = self.hp.mk  # convenience alias - HybridPredictor has .mk as MarkovPredictor instance
-
-        # try to restore saved data from disk (markov table, user history)
-        self._load_persisted()
-        
-        # autosave on normal exit
+        # Convenient pointer for persistence routines
+        self._mk = self.hp.mk
+        # Load data from previous sessions
+        self._restore_persisted_state()
+        # Register autosave hook
         atexit.register(self._shutdown)
-        self._started = time.time() # start timestamp
 
-    # Persistence helper logic  ---------------------------
-    def _load_persisted(self):
-        # load saved markov state from disk (should be mapping prev -> {next: count} or prev -> list (for legacy saves))
-        mdata = load_markov() or {}
-        if not mdata:
-            Log.write("No markov data found, starting from scratch.")
-            return
+        self._started_at = time.time()
 
-        # convert loaded structure into MarkovPredictor's internal table
-        # accept: {prev: {next: count}} or {prev: [next, next, ...]}
-        # counters:
-        # tbl : bigram transition frequencies, unig: unigram totals (e.g frequency of each token)
+    # Load persisted data (Markov transitions + personalization) -----------------------------
+    def _restore_persisted_state(self):
+        """Restore Markov transitions and personalization history."""
+        raw_markov = load_markov()
+        if not raw_markov:
+            Log.write("[restore] No markov model found; cold start.")
+        else:
+            self._apply_markov(raw_markov)
+
+        raw_user = load_user_cache()
+        if raw_user:
+            self._apply_user_history(raw_user)
+
+    def _apply_markov(self, data):
+        """
+        Convert persisted Markov JSON structure into actual
+        defaultdict(Counter) tables used internally.
+        """
         tbl = defaultdict(Counter)
-        unig = Counter()
-        for prev, vals in mdata.items():
+        unigrams = Counter()
+        for prev, vals in data.items():
             if isinstance(vals, dict):
+                # standard shape: {next: count}
                 for nxt, cnt in vals.items():
-                    tbl[prev][nxt] += int(cnt)
-                    unig[prev] += int(cnt)
+                    cnt = int(cnt)
+                    tbl[prev][nxt] += cnt
+                    unigrams[prev] += cnt
             elif isinstance(vals, list):
+                # legacy shape: list of next tokens
                 for nxt in vals:
                     tbl[prev][nxt] += 1
-                    unig[prev] += 1
+                    unigrams[prev] += 1
             else:
-                # unknown shape, skip and ignore
+                # unknown data format, skip
                 continue
 
-        # apply data to MarkovPredictor
+        # write into MarkovPredictor internals
         try:
-            # markov predictor uses _table: defaultdict(Counter) and _unigrams Counter
-            self.mk._table = tbl
-            self.mk._unigrams = unig
-            Log.write(f"Restored markov data ({len(tbl)} keys)")
+            self._mk._table = tbl
+            self._mk._unigrams = unigrams
+            Log.write(f"[restore] Markov rebuild complete ({len(tbl)} states).")
         except Exception as e:
-            Log.write(f"Failed to restore markov into predictor: {e}")
+            Log.write(f"[restore] Failed to load Markov predictor: {e}")
 
-        # load user personalisation cache if available
-        ucache = load_user_cache() or {}
+    def _apply_user_history(self, cache):
+        """Restore user personalization history into CtxPersonal."""
+        hist = cache.get("history", [])
+        if not hist:
+            return
+
+        # history format: [{"word": w, "count": n}, ...]
+        ctx = self.hp.ctx
+
         try:
-            # CtxPersonal stores history via self.hist. if empty, keep the existing history
-            if ucache.get("history"):
-                # convert list of phrases to per-word counts
-                for phrase in ucache.get("history", []):
-                    self.hp.ctx.learn(phrase)
-                Log.write(f"Restored user history ({len(ucache.get('history', []))} items)")
+            for item in hist:
+                w = item.get("word")
+                cnt = int(item.get("count", 1))
+                for _ in range(cnt):
+                    ctx.learn(w)
+            Log.write(f"[restore] User history restored ({len(hist)} words).")
         except Exception as e:
-            Log.write(f"Failed to restore user cache: {e}")
+            Log.write(f"[restore] Failed to load user history: {e}")
 
-    def _serialize_markov(self):
-        """
-        Convert MarkovPredictor's internal table to JSON-serializable plain dictionary:
-        prev -> {next: count}
-        """
+    # Persistence (on shutdown) --------------------------------------------------------------
+    def _serialise_markov(self):
+        """Convert Markov tables into JSON-safe shape."""
         out = {}
-        try:
-            for prev, counter in self.mk._table.items():
-                if isinstance(counter, Counter):
-                    out[prev] = dict(counter)
-                else:
-                    #  if it's a list, convert to counter first
-                    out[prev] = dict(Counter(counter))
-        except Exception as e:
-            Log.write(f"Error serialising Markov model: {e}")
+        for prev, counter in self._mk._table.items():
+            if isinstance(counter, Counter):
+                out[prev] = dict(counter)
+            else:
+                # convert any odd shapes to a Counter
+                out[prev] = dict(Counter(counter))
         return out
 
     def _shutdown(self):
-        """save models and user cache at exit"""
-        Log.write("Shutdown: saving state to disk")
+        """Automatically invoked during normal interpreter exit."""
+        Log.write("[shutdown] Saving state to disk...")
 
-        # save markov chain by converting to prev -> {next: count}
+        # Save markov transitions
         try:
-            mdata = self._serialize_markov()
-            save_markov(mdata)
+            save_markov(self._serialise_markov())
         except Exception as e:
-            Log.write(f"save_markov failed: {e}")
+            Log.write(f"[shutdown] save_markov failed: {e}")
 
-        # save user cache (store history from CtxPersonal if it is available (above))
+        # Save personalization history
         try:
-            hist = []
-            try:
-                # try to find prior history from ctx.hist or hp.ctx.hist (Counter)
-                if hasattr(self.hp.ctx, "hist"):
-                    # expand into a list
-                    # store fixed recent slice, top 200 most common entries to avoid too big files
-                    for w, cnt in self.hp.ctx.hist.most_common(200):
-                        # store the word > count times? store as word:count mapping
-                        hist.append({"word": w, "count": int(cnt)})
-                # object and metadata
-                uobj = {
-                    "history": hist,
-                    "saved_at": int(time.time()),
-                }
-                save_user_cache(uobj)
-                Log.write("User cache saved")
-            except Exception:
-                # fallback
-                save_user_cache({"history": hist})
+            ctx = self.hp.ctx
+            hist_items = []
+            if hasattr(ctx, "hist"):
+                for word, cnt in ctx.hist.most_common(200):
+                    hist_items.append({"word": word, "count": int(cnt)})
+            save_user_cache({
+                "history": hist_items,
+                "saved_at": int(time.time()),
+            })
+            Log.write("[shutdown] User history saved.")
         except Exception as e:
-            Log.write(f"Failed to save user cache: {e}")
+            Log.write(f"[shutdown] save_user_cache failed: {e}")
 
-    # API -------------------------------------
-    def train_lines(self, lines):
-        """Train model on list of lines (corpus.txt)."""
-        self.hp.train(lines)
-
-    def retrain(self, sentence):
-        """Update incrimentally with new sentence."""
-        self.hp.retrain(sentence)
-
-    def suggest(self, prefix, topn=5):
-        """Return suggestions from hybrid predictor based on prefix given."""
+    # Public API (used by CLI, TUI, tests etc) -----------------------------------------------
+    def suggest(self, prefix: str, topn: int = 5):
+        """Return top predictions for a given prefix."""
         return self.hp.suggest(prefix, topn=topn)
 
+    def train_lines(self, lines):
+        """Bulk-train using corpus lines."""
+        return self.hp.train(lines)
+
+    def retrain(self, sentence):
+        """Incrementally learn from a newly accepted line."""
+        return self.hp.retrain(sentence)
+
     def accept(self, word):
-        """Called when user accepts a suggestion, model reinforces succesfull predictions as training"""
-        self.hp.accept_suggestion(word)
+        """Reinforce a successful prediction."""
+        return self.hp.accept_suggestion(word)
 
     def stats(self):
-        """Return a summary of stats."""
+        """Basic diagnostics for UI or tests."""
         return {
-            "uptime_s": round(time.time() - self._started, 1),
+            "uptime_s": round(time.time() - self._started_at, 1),
             "vocab_size": len(list(self.hp.trie.iter_words_from(""))),
         }
 
-
-# small manual test when run directly
+# small manual test
 if __name__ == "__main__":
     ac = AutoCompleter()
-    print("Autocompleter loaded. Try ac.suggest('the') or ac.train_lines([...])")
-
-
-
+    print("Try: ac.suggest('the')")
