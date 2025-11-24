@@ -1,144 +1,211 @@
-# context_personal.py - context + user pref and vocabulary tracking + recent context
+# context_personal.py
+# Per-user personalization engine for adaptive autocomplete behavior.
+# Learns from user text to bias future suggestions using:
+#  - Word frequency
+#  - Recency-weighted preferences
+#  - POS distribution (if spaCy available)
+#  - Semantic similarity (if spaCy vectors available)
+# Integrates with Trie + ContextPredictor for a context-aware language assistant.
+# ---------------------------------------------------------------------
 
+from __future__ import annotations
 import json
 import os
 import math
 import time
+import re
+from typing import Dict, List, Tuple, Optional
 from collections import defaultdict, deque
+
 from logger_utils import Log
 
-try:
-    import spacy
-    NLP = spacy.load("en_core_web_sm")
-except Exception:
-    NLP = None
+# Lazy spaCy loader
+NLP = None
 
+def _ensure_spacy():
+    global NLP
+    if NLP is not None:
+        return NLP
 
+    try:
+        import spacy
+        NLP = spacy.load("en_core_web_sm", disable=["ner"])
+        Log.write("[CtxPersonal] spaCy loaded successfully.")
+    except Exception:
+        NLP = None
+        Log.write("[CtxPersonal] spaCy unavailable; POS + semantic disabled.")
+    return NLP
+
+# Storage paths
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "userdata")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 
 class CtxPersonal:
     """
-    Context-aware personalization engine.
+    User-specific context engine.
 
-    Learns from user input to bias future word suggestions.
-    - Tracks word frequency and recency.
-    - Learns POS (part-of-speech) distributions if spaCy is available.
-    - Applies decay to older data for adaptive behavior.
-    - Persists user data between sessions.
+    Tracks individualized statistics:
+        - Word frequency with log-scaled weighting
+        - Recency (sliding window)
+        - POS usage patterns (optional)
+        - Semantic similarity (optional)
+        - Time-based decay to prevent stale influence
+
+    Has scoring layer that applies personalized bias to
+    autocomplete suggestions.
     """
+
+    VERSION = 1
+    TOKEN_RE = re.compile(r"[a-zA-Z']+")  # allows contractions
 
     def __init__(self, user: str = "default"):
         self.user = user
-        os.makedirs(DATA_DIR, exist_ok=True)
         self.path = os.path.join(DATA_DIR, f"{user}.json")
 
-        self.freq = defaultdict(float)     # word frequency
-        self.recent = deque(maxlen=50)     # recent context
-        self.pos_hist = defaultdict(float) # POS tag frequencies
-        self.last_decay = time.time()
+        self.freq: Dict[str, float] = defaultdict(float)
+        self.recent: deque[str] = deque(maxlen=50)
+        self.pos_hist: Dict[str, float] = defaultdict(float)
+        self.last_decay: float = time.time()
+
+        # Cache for semantic embeddings
+        self._vec_cache: Dict[str, Optional[List[float]]] = {}
 
         self._load()
 
-    # Learning and Decay --------------------------------------------
-    def learn(self, text: str):
-        """
-        Update learned preferences from a user text input.
-        """
-        if not text or not isinstance(text, str):
+    def learn(self, text: str) -> None:
+        """Update user preferences from raw text input."""
+        if not isinstance(text, str) or not text.strip():
             return
 
-        tokens = [w.lower() for w in text.split() if w.isalpha()]
+        tokens = [t.lower() for t in self.TOKEN_RE.findall(text)]
         if not tokens:
             return
 
-        # Apply occasional decay to simulate adaptive forgetting
-        if time.time() - self.last_decay > 3600:  # every hour
+        # Decay once an hour
+        now = time.time()
+        if now - self.last_decay > 3600:
             self._decay()
-            self.last_decay = time.time()
+            self.last_decay = now
 
-        # Learn frequencies
-        for word in tokens:
-            self.freq[word] += 1
-            self.recent.append(word)
+        # Frequency & recency
+        for w in tokens:
+            self.freq[w] += 1.0
+            self.recent.append(w)
 
-        # Learn linguistic context
-        if NLP:
-            doc = NLP(text)
-            for tok in doc:
-                self.pos_hist[tok.pos_] += 1
+        # POS learning (lazy spaCy)
+        nlp = _ensure_spacy()
+        if nlp:
+            try:
+                doc = nlp(text)
+                for tok in doc:
+                    self.pos_hist[tok.pos_] += 1.0
+            except Exception:
+                pass
 
-        Log.write(f"[CtxPersonal] Learned {len(tokens)} words for user '{self.user}'")
+        Log.write(f"[CtxPersonal] Learned {len(tokens)} tokens for user '{self.user}'.")
 
-    def _decay(self, factor: float = 0.97):
+    def _decay(self, factor: float = 0.97) -> None:
+        """Apply exponential decay to maintain adaptiveness."""
+        for table in (self.freq, self.pos_hist):
+            for k in list(table.keys()):
+                table[k] *= factor
+                if table[k] < 0.01:
+                    del table[k]
+
+        Log.write(f"[CtxPersonal] Applied decay factor={factor:.2f}")
+
+    def bias_words(self, suggestions: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
         """
-        Gradually decay old data to keep context adaptive and avoid overfitting.
-        """
-        for d in (self.freq, self.pos_hist):
-            for k in list(d.keys()):
-                d[k] *= factor
-                if d[k] < 0.01:
-                    del d[k]
-        Log.write(f"[CtxPersonal] Applied decay factor {factor:.2f}")
+        Re-rank suggestions using personal preference statistics.
 
-    # Biasing and Scoring -------------------------------------------------------
-    def bias_words(self, suggestions):
+        Each input item: (word, base_score)
+        Returns: sorted list of (word, adjusted_score)
         """
-        Adjust suggestion scores based on user frequency, recency, and linguistic patterns.
-        Each element of 'suggestions' should be (word, score).
-        """
+        if not suggestions:
+            return suggestions
+
+        total_pos = sum(self.pos_hist.values()) or 1.0
+        nlp = NLP or _ensure_spacy()
+
         adjusted = []
+
         for word, score in suggestions:
-            # Frequency boost (log-based)
-            freq_boost = 1 + math.log1p(self.freq.get(word, 0)) * 0.15
+            wl = word.lower()
 
-            # Recency boost
-            recent_boost = 1.15 if word in self.recent else 1.0
+            # Frequency boost (logarithmic)
+            f = self.freq.get(wl, 0.0)
+            freq_boost = 1.0 + math.log1p(f) * 0.12
 
-            # POS pattern alignment (if known)
-            if NLP:
+            # Recency boost (decays by position)
+            recency_boost = 1.0
+            if wl in self.recent:
+                idx = list(self.recent).index(wl)
+                recency_boost = 1.0 + (1 - idx / len(self.recent)) * 0.25
+
+            # POS affinity
+            pos_boost = 1.0
+            if nlp:
                 try:
-                    pos = NLP(word)[0].pos_
-                    pos_weight = 1 + (self.pos_hist.get(pos, 0) / (sum(self.pos_hist.values()) or 1)) * 0.1
+                    tok = nlp(wl)[0]
+                    p = self.pos_hist.get(tok.pos_, 0.0)
+                    pos_boost = 1.0 + (p / total_pos) * 0.1
                 except Exception:
-                    pos_weight = 1.0
-            else:
-                pos_weight = 1.0
+                    pass
 
-            # Semantic boost (optional)
-            sim_boost = self._semantic_boost(word) if NLP else 1.0
+            # Semantic similarity
+            sem_boost = 1.0
+            if nlp:
+                sem_boost = self._semantic_boost(wl)
 
-            total_score = score * freq_boost * recent_boost * pos_weight * sim_boost
-            adjusted.append((word, total_score))
+            total = score * freq_boost * recency_boost * pos_boost * sem_boost
+            adjusted.append((word, total))
 
         adjusted.sort(key=lambda x: x[1], reverse=True)
         return adjusted
 
     def _semantic_boost(self, word: str) -> float:
-        """
-        If spaCy vectors are available, boost words similar to recent ones.
-        """
-        if not NLP or not self.recent:
+        """Boost score if word is semantically related to recent words."""
+        nlp = NLP or _ensure_spacy()
+        if not nlp or not self.recent:
             return 1.0
+
         try:
-            wv = NLP(word).vector
-            if wv is None or not len(wv):
+            # Cache embedding
+            if word not in self._vec_cache:
+                doc = nlp(word)
+                self._vec_cache[word] = doc.vector if doc.has_vector else None
+
+            w_vec = self._vec_cache[word]
+            if w_vec is None:
                 return 1.0
 
-            # Average similarity to recent words
-            sims, n = 0.0, 0
-            for recent_word in list(self.recent)[-5:]:
-                rv = NLP(recent_word).vector
-                if rv is not None and len(rv):
-                    sims += wv.dot(rv) / (math.sqrt((wv**2).sum()) * math.sqrt((rv**2).sum()) + 1e-8)
-                    n += 1
-            return 1 + (sims / max(n, 1)) * 0.05
+            recent_words = list(self.recent)[-5:]
+            sims = 0.0
+            count = 0
+
+            for rw in recent_words:
+                if rw not in self._vec_cache:
+                    doc = nlp(rw)
+                    self._vec_cache[rw] = doc.vector if doc.has_vector else None
+
+                r_vec = self._vec_cache[rw]
+                if r_vec is None:
+                    continue
+
+                # spaCy explicitly optimizes this internally
+                sims += doc.similarity(nlp(rw))
+                count += 1
+
+            return 1.0 + (sims / max(count, 1)) * 0.05
+
         except Exception:
             return 1.0
 
-    # Persistence-----------------------------------------------
-    def save(self):
+    def save(self) -> None:
+        """Save user context."""
         data = {
+            "version": self.VERSION,
             "freq": dict(self.freq),
             "recent": list(self.recent),
             "pos_hist": dict(self.pos_hist),
@@ -148,27 +215,35 @@ class CtxPersonal:
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            Log.write(f"[ERROR] Saving user context: {e}")
+            Log.write(f"[ERROR] Saving context for user '{self.user}': {e}")
 
-    def _load(self):
+    def _load(self) -> None:
         if not os.path.exists(self.path):
             return
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+
+            # Version guard
+            if data.get("version") != self.VERSION:
+                Log.write("[CtxPersonal] Version mismatch; starting fresh.")
+                return
+
             self.freq.update(data.get("freq", {}))
             self.pos_hist.update(data.get("pos_hist", {}))
             self.recent.extend(data.get("recent", []))
             self.last_decay = data.get("last_decay", time.time())
-            Log.write(f"[CtxPersonal] Loaded context for user '{self.user}' ({len(self.freq)} words)")
-        except Exception as e:
-            Log.write(f"[ERROR] Loading user context: {e}")
 
-    # Utilities -------------------------------------------------------
-    def reset(self):
-        """Clear all user-learned data."""
+            Log.write(f"[CtxPersonal] Loaded context ({len(self.freq)} known words).")
+
+        except Exception as e:
+            Log.write(f"[ERROR] Loading context for user '{self.user}': {e}")
+
+    def reset(self) -> None:
+        """Completely clear user-specific data."""
         self.freq.clear()
         self.recent.clear()
         self.pos_hist.clear()
+        self._vec_cache.clear()
         self.save()
-        Log.write(f"[CtxPersonal] Reset personalization for '{self.user}'")
+        Log.write(f"[CtxPersonal] Reset data for '{self.user}'.")
