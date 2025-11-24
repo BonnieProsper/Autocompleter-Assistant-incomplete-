@@ -1,70 +1,125 @@
+"""
+reasoner.py
+Core reasoning engine for autocompleter.
+Performs:
+ - rule-based safety checks
+ - typo detection and corrections
+ - next-argument prediction heuristics
+ - plugin-driven reasoning extensions
+ - semantic (AI) command prediction
+
+It returns structured suggestions that the UI layer formats.
+"""
+
+from __future__ import annotations
 import re
-from typing import List
-from cli.ui.colors import yellow, red, green
+from typing import List, Dict, Any
 
 from intelligent_autocompleter.core.semantic_engine import SemanticEngine
 
+class ReasoningResult:
+    """
+    Represents a single reasoning insight.
+    The UI layer chooses how to display these.
+    """
+    __slots__ = ("type", "message", "metadata")
+
+    def __init__(self, type: str, message: str, metadata: Dict[str, Any] | None = None):
+        self.type = type                # "warning", "suggestion", "prediction"
+        self.message = message          # human-readable string
+        self.metadata = metadata or {}  # optional extra info
+
+    def __repr__(self):
+        return f"ReasoningResult(type={self.type}, message={self.message})"
+
 class CommandReasoner:
     """
-    A reasoning engine that analyzes user input to provide contextual suggestions 
-    based on predefined rules and external reasoning hooks.
+    Reasoning layer that provides CLI command input
+    with structured suggestions.
+    It combines static rules, pattern-based heuristics, 
+    plugin-provided reasoning, and semantic AI prediction
     """
-    def __init__(self, registry):
-        self.registry = registry  # Registry that holds additional reasoning hooks
+
+    # Static rule definitions ---------------------------------------------------
+    DANGEROUS_PATTERNS = [
+        r"\brm\s+-rf\b",
+        r"\bsudo\s+rm\b",
+        r"\bmkfs\b",
+        r"\bshutdown\b"
+    ]
+
+    COMMON_CORRECTIONS = {
+        r"\bgti\b": "git",
+        r"\bpip\s+instal\b": "pip install",
+    }
+
+    GIT_FOLLOWUPS = ["commit", "push", "pull", "status", "branch"]
+
+    def __init__(self, plugin_registry):
+        """
+        plugin_registry must expose a `run_reasoning(input: str) -> List[ReasoningResult]` method.
+        """
+        self.registry = plugin_registry
         self.semantic = SemanticEngine()
 
-    def analyze_input(self, user_input: str) -> List[str]:
-        """
-        Analyzes the given user input and generates relevant suggestions or warnings.
-        """
-        suggestions = []
-      
-        # Run built-in reasoning checks
-        suggestions.extend(self.flag_dangerous(user_input))
-        suggestions.extend(self.suggest_autocorrections(user_input))
-        suggestions.extend(self.predict_next_argument(user_input))
-        
-        # Run plugin-specific reasoning hooks
-        suggestions.extend(self.registry.run_reasoning(user_input))
+    # ENTRY POINT ----------------------------------------------------------------
+    def analyze_input(self, user_input: str) -> List[ReasoningResult]:
+        insights: List[ReasoningResult] = []
+        insights.extend(self._check_dangerous_patterns(user_input))
+        insights.extend(self._suggest_corrections(user_input))
+        insights.extend(self._predict_next_steps(user_input))
+        insights.extend(self.registry.run_reasoning(user_input))  # plugin hooks
+        insights.extend(self._semantic_prediction(user_input))
+        return insights
 
-        # Semantic intelligence layer
-        semantic_cmd = self.semantic_engine.predict_command(user_input)
-        if semantic_cmd:
-            suggestions.append(green(f"AI Suggestion → {semantic_cmd}"))
+    # RULE-BASED REASONING ---------------------------------------------------------
+    def _check_dangerous_patterns(self, user_input: str) -> List[ReasoningResult]:
+        results = []
+        for pattern in self.DANGEROUS_PATTERNS:
+            if re.search(pattern, user_input):
+                results.append(
+                    ReasoningResult(
+                        type="warning",
+                        message=f"Command looks dangerous: '{user_input}'",
+                        metadata={"pattern": pattern},
+                    )
+                )
+        return results
 
-        return suggestions
+    def _suggest_corrections(self, user_input: str) -> List[ReasoningResult]:
+        results = []
+        for pattern, correction in self.COMMON_CORRECTIONS.items():
+            if re.search(pattern, user_input):
+                results.append(
+                    ReasoningResult(
+                        type="suggestion",
+                        message=f"Did you mean '{correction}'?",
+                        metadata={"correction": correction},
+                    )
+                )
+        return results
 
-    def flag_dangerous(self, user_input: str) -> List[str]:
-        """
-        Flags potentially dangerous commands that could result in data loss or system issues.
-        """
-        dangerous_commands = ["rm -rf", "sudo rm", "mkfs", "shutdown"]
-        warnings = []
-        for dangerous_command in dangerous_commands:
-            if dangerous_command in user_input:
-                warnings.append(red(f"⚠ WARNING: '{user_input}' seems risky."))
-        return warnings
-
-    def suggest_autocorrections(self, user_input: str) -> List[str]:
-        """
-        Suggests possible corrections for common typos or misused commands.
-        """
-        corrections = []
-        if "gti " in user_input:
-            corrections.append(yellow("Did you mean 'git'?"))
-        if re.match(r"pip instal ", user_input):
-            corrections.append(yellow("Did you mean 'pip install'?"))
-
-        return corrections
-
-    def predict_next_argument(self, user_input: str) -> List[str]:
-        """
-        Suggests likely next commands based on the user's current input, to assist with 
-        completing commonly used command sequences.
-        """
-        predictions = []
+    def _predict_next_steps(self, user_input: str) -> List[ReasoningResult]:
         if user_input.startswith("git "):
-            common_git_commands = ["commit", "push", "pull", "status", "branch"]
-            predictions.append(green("Next likely git commands: " + ", ".join(common_git_commands)))
+            return [
+                ReasoningResult(
+                    type="prediction",
+                    message="Likely next git commands: " + ", ".join(self.GIT_FOLLOWUPS),
+                    metadata={"options": self.GIT_FOLLOWUPS},
+                )
+            ]
+        return []
 
-        return predictions
+    # SEMANTIC ASSISTED REASONING --------------------------------------------------
+    def _semantic_prediction(self, user_input: str) -> List[ReasoningResult]:
+        prediction = self.semantic.predict_command(user_input)
+        if not prediction:
+            return []
+        return [
+            ReasoningResult(
+                type="semantic",
+                message=f"AI Suggestion → {prediction}",
+                metadata={"model": "SemanticEngine"},
+            )
+        ]
+
