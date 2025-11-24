@@ -1,4 +1,4 @@
-# utils/registry.py
+# core/registry.py
 
 from typing import Callable, List, Dict, Optional
 
