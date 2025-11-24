@@ -2,8 +2,8 @@
 # BK-tree for approximate/fuzzy string matching (typo-tolerant lookup).
 # Designed for use in an autocompleter: insert words, then query for
 # close matches within a given edit distance.
-#  - Node keeps a simple frequency counter (useful for ranking/popularity).
-#  - Levenshtein implements an early-exit cutoff to speed up searches.
+# - Node keeps a simple frequency counter (useful for ranking/popularity).
+# - Levenshtein implements an early-exit cutoff to speed up searches.
 # Query uses an explicit stack (no recursion) and prunes using triangle property of edit distance.
 
 from typing import List, Tuple, Optional, Iterable
@@ -20,8 +20,7 @@ def levenshtein_with_cutoff(a: str, b: str, max_dist: Optional[int] = None) -> i
     Compute Levenshtein distance with optional early exit when distance
     exceeds max_dist. This is faster for fuzzy search where we only care
     about nearby matches.
-
-    Returns the computed distance (may be > max_dist if cutoff not used).
+    Returns the computed distance (may be greater than max_dist if cutoff not used).
     """
     if a == b:
         return 0
@@ -32,7 +31,7 @@ def levenshtein_with_cutoff(a: str, b: str, max_dist: Optional[int] = None) -> i
 
     la, lb = len(a), len(b)
 
-    # quick bound: if length difference > max_dist, we can bail early
+    # bounding: if length difference > max_dist, we can bail early
     if max_dist is not None and abs(la - lb) > max_dist:
         return max_dist + 1
 
@@ -67,7 +66,7 @@ def levenshtein_with_cutoff(a: str, b: str, max_dist: Optional[int] = None) -> i
 
 class BKTree:
     """BK-tree for approximate string lookup."""
-
+    
     class Node:
         __slots__ = ("word", "children", "count")
 
@@ -80,11 +79,9 @@ class BKTree:
         self.root: Optional[BKTree.Node] = None
         self._size = 0
 
-    # -------------------------
-    # insertion / building
-    # -------------------------
+    # insertion/building -------------------------------------------------------------
     def insert(self, word: str) -> None:
-        """Insert a single word into the BK-tree. Normalizes input."""
+        """Inserts a single word into the BK-tree and normalizes input."""
         if not word or not isinstance(word, str):
             return
 
@@ -115,12 +112,10 @@ class BKTree:
         for w in words:
             self.insert(w)
 
-    # -------------------------
-    # query
-    # -------------------------
+    # query ---------------------------------------------------------------------------
     def query(self, word: str, max_dist: int = 2) -> List[Tuple[str, int]]:
         """
-        Return list of (word, distance) for words within max_dist of `word`.
+        Return list of (word, distance) for words within max_dist of 'word'.
         Result is sorted by (distance, -frequency, word) for stable top-k selection.
         """
         if not word or self.root is None:
@@ -136,7 +131,7 @@ class BKTree:
         stack = [self.root]
         while stack:
             node = stack.pop()
-            # compute distance with cutoff (we only need to know if <= max_dist)
+            # compute distance with cutoff (only need to know if distance <= max_dist)
             d = levenshtein_with_cutoff(q, node.word, max_dist)
             if d <= max_dist:
                 results.append((node.word, d, node.count))
@@ -148,15 +143,13 @@ class BKTree:
                 if low <= dist_key <= high:
                     stack.append(child)
 
-        # sort: prefer smaller distance, then higher frequency, then lexicographic
+        # sorting order: prefer smaller distance, then higher frequency, then lexicographic
         results.sort(key=lambda item: (item[1], -item[2], item[0]))
         return [(w, dist) for (w, dist, _count) in results]
 
-    # -------------------------
-    # utilities
-    # -------------------------
+    # utilities -------------------------------------------------------------------
     def __contains__(self, word: str) -> bool:
-        """True if exact word exists in the tree (case/space-normalized)."""
+        """True if exact word exists in the tree (case/space normalized)."""
         if not self.root:
             return False
         target = _normalize(word)
@@ -175,7 +168,7 @@ class BKTree:
         return self._size
 
     def words(self) -> List[Tuple[str, int]]:
-        """Return all words stored with their frequencies (unsorted)."""
+        """Return all words stored with their frequencies, unsorted."""
         out: List[Tuple[str, int]] = []
         if not self.root:
             return out
@@ -191,3 +184,4 @@ class BKTree:
         """Remove all nodes."""
         self.root = None
         self._size = 0
+
