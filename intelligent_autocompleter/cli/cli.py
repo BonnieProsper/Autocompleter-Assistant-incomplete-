@@ -32,6 +32,20 @@ from intelligent_autocompleter.utils.metrics_tracker import Metrics
 from intelligent_autocompleter.utils.config_manager import Config
 from intelligent_autocompleter.core.context_personal import CtxPersonal
 
+""" check:
+from intelligent_autocompleter.core.reasoner import ReasonerPipeline
+from intelligent_autocompleter.core.semantic_engine import SemanticEngine
+
+sem = SemanticEngine()  # or pass None during tests
+pipeline = ReasonerPipeline(plugin_registry=None, semantic_engine=sem)
+
+res = pipeline.analyze_input("gti commit -m 'fix'")
+# res is a dict: res['corrections'], res['predictions'], res['semantic'], res['warnings'], ...
+for k, v in res.items():
+    print(k, v)
+"""
+
+
 # initialise console for rich output
 console = Console()
 
