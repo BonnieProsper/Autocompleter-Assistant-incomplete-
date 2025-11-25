@@ -1,16 +1,14 @@
 """
 intelligent_autocompleter.core
 
-The core engine powering the Autocompleter Assistant.
-This package contains:
-  • statistical next-token models (MarkovPredictor)
-  • semantic/embedding engines (SemanticEngine)
-  • ranking and signal fusion logic (FusionRanker)
-  • command reasoning and contextual intelligence (CommandReasoner)
-  • central plugin/command registry (CommandRegistry)
-  • learning, feedback, and personalization components
-Only stable, public-facing classes are exported here to provide a clean,
-predictable import surface for developers using the core engine.
+The core engine powering the Autocompleter Assistant (remove/redundant?).
+Contains:
+ - statistical next-token models (MarkovPredictor)
+ - semantic/embedding engines (SemanticEngine)
+ - ranking and signal fusion logic (FusionRanker)
+ - command reasoning and contextual intelligence (CommandReasoner)
+ - central plugin/command registry (CommandRegistry)
+ - learning, feedback, and personalization components
 """
 
 from .markov_predictor import MarkovPredictor
