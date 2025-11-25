@@ -1,6 +1,6 @@
 # intelligent_autocompleter/hybrid_predictor.py
 """
-HybridPredictor - portfolio-ready, human-style implementation.
+HybridPredictor.
 Features:
  - Markov (syntactic/contextual)
  - Embeddings (semantic)
