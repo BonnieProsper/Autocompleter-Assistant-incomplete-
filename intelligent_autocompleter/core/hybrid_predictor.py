@@ -27,8 +27,7 @@ try:
     from intelligent_autocompleter.core.bktree import BKTree
     from intelligent_autocompleter.core.semantic_engine import SemanticEngine
     from intelligent_autocompleter.core.fusion_ranker import FusionRanker
-    from intelligent_autocompleter.core.feedback_tracker import FeedbackTracker
-    from intelligent_autocompleter.core.adaptive_learner import AdaptiveLearner
+    from intelligent_autocompleter.core.reinforcement_learner import ReinforcementLearner
     from intelligent_autocompleter.context_personal import CtxPersonal
     from intelligent_autocompleter.utils.logger_utils import Log
 except Exception:
@@ -38,8 +37,7 @@ except Exception:
     from core.bktree import BKTree
     from core.semantic_engine import SemanticEngine
     from core.fusion_ranker import FusionRanker
-    from core.feedback_tracker import FeedbackTracker
-    from core.adaptive_learner import AdaptiveLearner
+    from core.reinforcement_learner import ReinforcementLearner
     from context_personal import CtxPersonal
     from utils.logger_utils import Log
 
