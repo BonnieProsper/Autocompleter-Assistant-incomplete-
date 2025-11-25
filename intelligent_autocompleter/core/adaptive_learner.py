@@ -4,7 +4,7 @@ AdaptiveLearner
 ---------------
 Small online learning layer that adjusts the relative weights (influence) of
 each prediction source (semantic, markov, personal, plugin) based on user behaviour.
-Design goals:
+Purpose:
  - small & understandable (not a research project (but make it one in future?)
  - reward/penalize hook for FeedbackTracker
  - decay keeps the system stable (prevents one source from dominating forever)
