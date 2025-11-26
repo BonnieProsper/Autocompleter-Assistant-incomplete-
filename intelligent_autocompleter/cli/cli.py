@@ -32,7 +32,7 @@ from intelligent_autocompleter.utils.metrics_tracker import Metrics
 from intelligent_autocompleter.utils.config_manager import Config
 from intelligent_autocompleter.core.context_personal import CtxPersonal
 
-""" check:
+""" check/include:
 from intelligent_autocompleter.core.reasoner import ReasonerPipeline
 from intelligent_autocompleter.core.semantic_engine import SemanticEngine
 
@@ -68,8 +68,7 @@ class CLI:
         """
         self.registry = PluginRegistry()
         self.hp = HybridPredictor(registry=self.registry)
-        self.learner = AdaptiveLearner()
-        self.feedback = FeedbackTracker()
+        self.learner = ReinforcementLearner()
         
         self.context = CtxPersonal()
         self.metrics = Metrics()
@@ -77,6 +76,8 @@ class CLI:
         
         self.session_data = []
         self.running = True
+        self.show_feedback_logs = False  # toggleable
+        os.makedirs(DATA_DIR, exist_ok=True)
         self._load_state()
         self._load_plugin_config()
 
@@ -95,20 +96,20 @@ class CLI:
         while self.running:
             try:
                 # prompt user for input (suggestions shown as they type)
-                frag = Prompt.ask("[green]You[/green]", default="")
-                if not frag: # if no input continue to next iteration
+                fragment = Prompt.ask("[green]You[/green]", default="")
+                if not fragment: # if no input continue to next iteration
                     continue
 
                 # handle commands
-                if frag.startswith("/"):
-                    self._handle_command(frag)
+                if fragment.startswith("/"):
+                    self._handle_command(fragment)
                     continue
                 # handle inline comments
-                if frag.startswith("#"):
-                    self._add_comment(frag)
+                if fragment.startswith("#"):
+                    self._add_comment(fragment)
                     continue
 
-                self._process_input(frag)
+                self._process_input(fragment)
             except (EOFError, KeyboardInterrupt):
                 self._exit()
                 break
@@ -145,15 +146,19 @@ class CLI:
         console.print(f"[red]Unknown command:[/red] {cmd}")
 
     # CORE INPUT PROCESSING ---------------------------------------------------------------
-    def _process_input(self, fragment: str):
+    def _process_input(self, fragmentment: str):
         """
         Loop:
         Prediction → display → user choice → apply → adaptive learning → feedback tracking
         """
         t0 = time.perf_counter()
-        suggestions = self.hp.suggest(fragment) # get suggestions from HybridPredictor
+        suggestions = self.hp.suggest(fragmentment) # get suggestions from HybridPredictor
         self.metrics.record("suggest_time", time.perf_counter() - t0) # record time for stats
 
+        tokens = [t for t in fragment.strip().split() if t]
+        if tokens:
+            self.hp._learner.add_token(tokens[-1])
+            
         if not suggestions:
             console.print("[dim](no suggestions)[/dim]")
             return
@@ -174,7 +179,7 @@ class CLI:
             self.learner.update(word)
             self.feedback.push("accepted", {"word": word, "src": source})
 
-            self.session_data.append({"input": fragment, "accepted": word})
+            self.session_data.append({"input": fragmentment, "accepted": word})
             self._autosave()
             return
 
@@ -186,7 +191,7 @@ class CLI:
         self.feedback.push("custom", {"word": word})
 
         console.print(f"[cyan]Added custom:[/cyan] {word}")
-        self.session_data.append({"input": fragment, "custom": word})
+        self.session_data.append({"input": fragmentment, "custom": word})
         self._autosave()
 
     # DISPLAY -------------------------------------------------------------------------------
@@ -247,6 +252,13 @@ class CLI:
             border_style="cyan"
         )
         console.print(panel)
+
+        """or try:
+            weights = self.hp.get_weights()
+        except Exception:
+            weights = {}
+        panel = Panel.fit("\n".join([f"{k}: {v:.3f}" for k, v in weights.items()]), title="Live Weights", subtitle="ReinforcementLearner")
+        console.print(panel)"""
 
     def _show_plugins(self):
         rows = []
@@ -357,5 +369,19 @@ class CLI:
         self.running = False
 
 
+    def _session_summary(self):
+        total_inputs = len([x for x in self.session_data if "input" in x])
+        total_comments = len([x for x in self.session_data if "comment" in x])
+        top_words = sorted(self.context.freq.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        t = Table(title="Session Summary", box=box.MINIMAL)
+        t.add_column("Metric", style="cyan")
+        t.add_column("Value", style="white")
+        t.add_row("Total inputs", str(total_inputs))
+        t.add_row("Comments added", str(total_comments))
+        t.add_row("Top words", ", ".join(w for w, _ in top_words) or "(none)")
+        return t
+
+
 if __name__ == "__main__":
     CLI().run()
+
