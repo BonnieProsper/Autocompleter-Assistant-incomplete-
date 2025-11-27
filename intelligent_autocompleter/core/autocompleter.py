@@ -1,10 +1,10 @@
 # autocompleter.py
 # Orchestration layer for the Autocompleter system.
 # Purpose:
-#  - own HybridPredictor instance
-#  - load persisted Markov transitions + user history
-#  - friendly API for CLI/TUI/tests
-#  - manage autosave + lifecycle shutdown (is this needed e.g is already in cli?/tui?)
+# - own HybridPredictor instance
+# - load persisted Markov transitions + user history
+# - friendly API for CLI/TUI/tests
+# - manage autosave + lifecycle shutdown (is this needed e.g is already in cli?/tui?)
 # intentionally avoids algorithmic details, those go inside predictors and context modules.
 
 import atexit
@@ -174,3 +174,4 @@ class AutoCompleter:
 if __name__ == "__main__":
     ac = AutoCompleter()
     print("Try: ac.suggest('the')")
+
