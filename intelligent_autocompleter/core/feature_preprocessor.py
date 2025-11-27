@@ -44,7 +44,7 @@ class FeaturePreprocessor:
     Output: dict[word] -> NormalizedValues (per-feature)
     Use:
         pre = FeaturePreprocessor()
-        norm = pre.normalize_all(keys, {"markov": m_map, "embed": e_map, ...})
+        norm = pre.build_feature_matrix(keys, {"markov": m_map, "embed": e_map, ...})
     """
     def __init__(self, required_features: Optional[Iterable[str]] = None):
         self.required_features = set(required_features or [])
@@ -55,7 +55,7 @@ class FeaturePreprocessor:
             keys.update(m.keys())
         return sorted(keys)
 
-    def normalize_all(self,
+    def build_feature_matrix(self,
                       markov: ScoreMap = None,
                       embed: ScoreMap = None,
                       fuzzy: Dict[str, float] = None,
