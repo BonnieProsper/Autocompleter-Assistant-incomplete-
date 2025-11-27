@@ -62,12 +62,9 @@ DECAY = 0.995
 MIN_WEIGHT = 0.01
 
 
-# -------------------------
-# Data containers
-# -------------------------
 @dataclass
 class FeedbackEvent:
-    ts: str
+    timestamp: str
     context: str
     suggestion: str
     accepted: bool
@@ -75,7 +72,7 @@ class FeedbackEvent:
 
     def to_row(self) -> Dict[str, Any]:
         return {
-            "timestamp": self.ts,
+            "timestamp": self.timestamp,
             "context": self.context,
             "suggestion": self.suggestion,
             "accepted": "True" if self.accepted else "False",
@@ -115,7 +112,7 @@ class FeedbackStore:
             self.save()
 
     def record_accept(self, context: str, suggestion: str, source: Optional[str] = None) -> None:
-        ev = FeedbackEvent(ts=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        ev = FeedbackEvent(timestamp=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                            context=context or "",
                            suggestion=suggestion,
                            accepted=True,
@@ -123,7 +120,7 @@ class FeedbackStore:
         self.push(ev)
 
     def record_reject(self, context: str, suggestion: str, source: Optional[str] = None) -> None:
-        ev = FeedbackEvent(ts=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        ev = FeedbackEvent(timestamp=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                            context=context or "",
                            suggestion=suggestion,
                            accepted=False,
@@ -269,7 +266,7 @@ class WeightLearner:
     def reward(self, source: str, amount: float = REWARD_STEP) -> None:
         key = f"{source}_weight" if not source.endswith("_weight") else source
         if key not in self._profile:
-            # unknown source: ignore quietly
+            # unknown source, ignore quietly
             return
         self._profile[key] = min(1.0, float(self._profile.get(key, 0.0)) + float(amount))
         self._normalize_and_save()
