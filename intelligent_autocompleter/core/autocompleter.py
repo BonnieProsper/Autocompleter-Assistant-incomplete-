@@ -1,281 +1,321 @@
 # autocompleter.py
 """
-AutoCompleter - application facade for the Intelligent Autocompleter (redundant due to facade in HybridPredictor/fusion ranker, cli and tui?).
+AutoCompleter - application facade.
+ - check: (redundant due to facade in HybridPredictor/fusion ranker, cli and tui?).
+ - remove local fallbacks in all files?
 
-Responsibilities:
- - Owns a HybridPredictor instance
- - Handles persistence hooks (Markov + user context)
- - API for CLI/TUI/tests:
-     suggest(prefix), train_lines(lines), retrain(sentence), accept(word), stats()
- - Safe shutdown autosave (atexit), robust to missing persistence/backend implementations
- - Small logging wrapper to tolerate different Log implementations in repo
+Purpose:
+ - Own HybridPredictor instance
+ - Load/save persisted pieces (Markov + user context)
+ - Provide a stable, simple public API for UI/CLI/tests:
+     suggest(prefix, topn), train_lines(lines), retrain(sentence), accept(word), stats()
+ - Provide deterministic robust shutdown persistence and explicit save() API
 """
 
 from __future__ import annotations
+from typing import Iterable, List, Tuple, Dict, Any, Optional
 import atexit
 import time
 from pathlib import Path
-from typing import Iterable, List, Dict, Any
 
-# Import project modules (support local dev layout fallback)
+# resilient imports (support package vs local dev)
 try:
     from intelligent_autocompleter.core.hybrid_predictor import HybridPredictor
     from intelligent_autocompleter.core.model_store import load_markov, save_markov, load_user_cache, save_user_cache
     from intelligent_autocompleter.utils.logger_utils import Log
 except Exception:
-    # local fallback
-    from hybrid_predictor import HybridPredictor
-    from model_store import load_markov, save_markov, load_user_cache, save_user_cache
     try:
-        from logger_utils import Log  # your repo's logger_utils
+        # local fallbacks
+        from hybrid_predictor import HybridPredictor  # type: ignore
+        from model_store import load_markov, save_markov, load_user_cache, save_user_cache  # type: ignore
+        from logger_utils import Log  # type: ignore
     except Exception:
-        Log = None  # fallback to print if missing
+        # minimal fallback logger (check: extend/take out?)
+        class _SimpleLog:
+            @staticmethod
+            def write(msg: str):
+                print(msg)
+            @staticmethod
+            def metric(*args, **kwargs):
+                pass
+            @staticmethod
+            def time_block(label):
+                class _T:
+                    def __enter__(self): return self
+                    def __exit__(self, exc_type, exc, tb): pass
+                return _T()
+        Log = _SimpleLog  # type: ignore
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
 
-def _log_write(msg: str) -> None:
-    """Small compatibility wrapper.
-    Many modules call Log.write(msg) but Log object may be instance-based."""
+def _log(msg: str) -> None:
+    """Compatibility wrapper to call a project's Log facility safely."""
     try:
-        if Log is None:
-            print(msg)
+        # many Log implementations expose static write()
+        if hasattr(Log, "write") and callable(getattr(Log, "write")):
+            Log.write(msg)
         else:
-            # prefer static method if available
-            if hasattr(Log, "write") and callable(getattr(Log, "write")):
-                # Some logger implementations expect (msg) or (level,msg). Try safe calls.
-                try:
-                    Log.write(msg)
-                except TypeError:
-                    # maybe Log.write expects (level,msg) or is an instance method
-                    try:
-                        Log().write("INFO", msg)
-                    except Exception:
-                        print(msg)
+            inst = Log()
+            if hasattr(inst, "info"):
+                inst.info(msg)
+            elif hasattr(inst, "write"):
+                inst.write(msg)
             else:
-                # instantiate and call info/debug
-                logger = Log()
-                if hasattr(logger, "info"):
-                    logger.info(msg)
-                elif hasattr(logger, "write"):
-                    logger.write(msg)
-                else:
-                    print(msg)
+                print(msg)
     except Exception:
-        print(msg)
+        try:
+            print(msg)
+        except Exception:
+            pass
 
 
 class AutoCompleter:
     """
-    Facade for autocompleter.
+    Facade around HybridPredictor.
 
     Public API:
-      - suggest(prefix: str, topn: int=5) -> list[(word,score)]
+      - suggest(prefix: str, topn: int = 5) -> List[(word, score)]
       - train_lines(lines: Iterable[str]) -> None
       - retrain(sentence: str) -> None
-      - accept(word: str, context: str|None = None) -> None
-      - stats() -> dict for UI/tests
+      - accept(word: str, context: Optional[str]=None, source: Optional[str]=None) -> None
+      - save() -> None
+      - stats() -> Dict[str, Any]
     """
 
-    def __init__(self, user: str = "default", ranker_preset: str = "balanced"):
+    def __init__(self, user: str = "default", ranker_preset: str = "balanced", autosave: bool = True):
         self.user = user
-        _log_write(f"[AutoCompleter] booting user='{user}'")
-
-        # create predictor. HybridPredictor should gracefully handle missing optional dependencies.
+        _log(f"[AutoCompleter] initializing user={user!r} preset={ranker_preset!r}")
+        # Build predictor with dependency injection options
         self.hp = HybridPredictor(user=user, ranker_preset=ranker_preset)
-
-        # convenience pointer to Markov predictor (if exposed)
-        self._mk = getattr(self.hp, "markov", getattr(self.hp, "_markov", None))
-
+        # convenience pointer
+        self._markov = getattr(self.hp, "markov", None) or getattr(self.hp, "_markov", None)
         # restore persisted state
         self._restore_state()
-
-        # register autosave on normal exit
-        atexit.register(self._shutdown)
-
         self._started_at = time.time()
+        self._closed = False
+        if autosave:
+            atexit.register(self._shutdown)
 
-    # Persistence helpers ------------------------------------
+    # Persistence --------------------------------------------
     def _restore_state(self) -> None:
-        """Attempt to restore persisted model pieces."""
+        """Restore markov and user context using model_store helpers (best-effort)."""
         try:
             raw_markov = load_markov()
             if raw_markov:
-                # HybridPredictor may implement a load_state/mk.load_from_serialized - check 
+                # Prefer an explicit loader on markov if available
                 mk = getattr(self.hp, "markov", None) or getattr(self.hp, "_markov", None)
-                if mk and hasattr(mk, "load_from_serialized"):
-                    mk.load_from_serialized(raw_markov)
-                    _log_write("[AutoCompleter] restored markov via mk.load_from_serialized")
-                else:
-                    # fallback: try set internals (older API)
-                    if hasattr(self.hp, "_markov") and hasattr(self.hp._markov, "_table"):
-                        # expect format {prev: {next: count}}
-                        try:
-                            # Accept both dict-of-dict and legacy list shapes
-                            tbl = {}
-                            for prev, vals in raw_markov.items():
-                                if isinstance(vals, dict):
-                                    tbl[prev] = dict(vals)
-                                elif isinstance(vals, list):
-                                    # convert list to counts
-                                    c = {}
-                                    for nxt in vals:
-                                        c[nxt] = c.get(nxt, 0) + 1
-                                    tbl[prev] = c
-                            # assign into internal markov table if safe
-                            try:
-                                self.hp._markov._table = {k: __import__("collections").Counter(v) for k, v in tbl.items()}
-                                _log_write(f"[AutoCompleter] restored markov ({len(tbl)} keys)")
-                            except Exception:
-                                _log_write("[AutoCompleter] markov restore encountered unexpected internal shape")
-                        except Exception as e:
-                            _log_write(f"[AutoCompleter] markov restore parse failed: {e}")
+                if mk and hasattr(mk, "load_state"):
+                    try:
+                        mk.load_state(raw_markov)
+                        _log("[AutoCompleter] markov loaded via mk.load_state")
+                        return
+                    except Exception:
+                        _log("[AutoCompleter] mk.load_state failed, falling back")
+                # Fallback: if HybridPredictor exposes load_state
+                if hasattr(self.hp, "load_state"):
+                    try:
+                        self.hp.load_state(raw_markov)
+                        _log("[AutoCompleter] hybrid.load_state used")
+                        return
+                    except Exception:
+                        _log("[AutoCompleter] hybrid.load_state failed, fallback to internal assignment")
+                # final attempt: attempt to coerce into mk._table if present
+                if mk and hasattr(mk, "_table"):
+                    try:
+                        from collections import Counter
+                        table = {}
+                        for prev, vals in raw_markov.items():
+                            if isinstance(vals, dict):
+                                table[prev] = Counter({k: int(v) for k, v in vals.items()})
+                            elif isinstance(vals, list):
+                                c = Counter(vals)
+                                table[prev] = c
+                        mk._table = table
+                        _log("[AutoCompleter] markov table restored.")
+                    except Exception as e:
+                        _log(f"[AutoCompleter] failed to set markov internals: {e}")
             else:
-                _log_write("[AutoCompleter] no saved markov found; starting cold")
+                _log("[AutoCompleter] no markov snapshot found")
         except Exception as e:
-            _log_write(f"[AutoCompleter] markov restore failed: {e}")
+            _log(f"[AutoCompleter] markov restore error: {e}")
 
+        # user context
         try:
             raw_user = load_user_cache()
             if raw_user:
                 ctx = getattr(self.hp, "ctx", None)
-                if ctx and hasattr(ctx, "load") and callable(ctx.load):
-                    try:
-                        ctx.load(raw_user)
-                        _log_write("[AutoCompleter] restored user context via ctx.load")
-                    except Exception:
-                        # fallback to applying history items
+                if ctx:
+                    # prefer ctx.load or ctx._load-like API
+                    if hasattr(ctx, "load"):
+                        try:
+                            ctx.load(raw_user)
+                            _log("[AutoCompleter] user context loaded via ctx.load")
+                            return
+                        except Exception:
+                            _log("[AutoCompleter] ctx.load failed. Falling back")
+                    if hasattr(ctx, "learn"):
+                        # fallback: apply history list items
                         hist = raw_user.get("history", [])
                         for item in hist:
-                            w = item.get("word")
-                            cnt = int(item.get("count", 1))
-                            for _ in range(cnt):
-                                try:
+                            try:
+                                w = item.get("word")
+                                cnt = int(item.get("count", 1))
+                                for _ in range(cnt):
                                     ctx.learn(w)
-                                except Exception:
-                                    pass
-                        _log_write(f"[AutoCompleter] restored user history ({len(hist)} items)")
-                else:
-                    # fallback: attempt direct structure
-                    hist = raw_user.get("history", [])
-                    ctx = getattr(self.hp, "ctx", None)
-                    if ctx and hasattr(ctx, "learn"):
-                        for item in hist:
-                            w = item.get("word")
-                            cnt = int(item.get("count", 1))
-                            for _ in range(cnt):
-                                try:
-                                    ctx.learn(w)
-                                except Exception:
-                                    pass
-                    _log_write("[AutoCompleter] user context restored (best-effort)")
+                            except Exception:
+                                pass
+                        _log(f"[AutoCompleter] restored user history ({len(hist)} items)")
+                    else:
+                        _log("[AutoCompleter] ctx present but has no load/learn, skipping user restore")
         except Exception as e:
-            _log_write(f"[AutoCompleter] user restore failed: {e}")
+            _log(f"[AutoCompleter] user restore error: {e}")
 
     def _serialise_markov(self) -> Dict[str, Dict[str, int]]:
-        """Serialize markov internals into a JSON-safe dict. Best-effort depending on markov API."""
+        """Serialize the markov predictor into a JSON-compatible dict."""
         mk = getattr(self.hp, "markov", None) or getattr(self.hp, "_markov", None)
-        out = {}
+        out: Dict[str, Dict[str, int]] = {}
+        if not mk:
+            return out
+        # prefer export_state/save_state/save_state style APIs
         try:
-            if mk and hasattr(mk, "export_state"):
+            if hasattr(mk, "export_state"):
                 return mk.export_state()
-            # try common internal shapes
-            table = getattr(mk, "_table", None) or getattr(mk, "table", None)
-            if isinstance(table, dict):
-                for prev, cnts in table.items():
+            if hasattr(mk, "save_state"):
+                return mk.save_state()
+        except Exception:
+            # continue to internal probing
+            pass
+        # probe internals
+        table = getattr(mk, "_table", None) or getattr(mk, "table", None)
+        if isinstance(table, dict):
+            for prev, counts in table.items():
+                try:
+                    out[prev] = dict(counts)
+                except Exception:
+                    # try iterate pairs
                     try:
-                        # Counter-like -> dict
-                        out[prev] = dict(cnts)
+                        out[prev] = {k: int(v) for k, v in (counts.items() if hasattr(counts, "items") else [])}
                     except Exception:
-                        # fallback: attempt iterate
-                        out[prev] = {k: int(v) for k, v in (cnts.items() if hasattr(cnts, "items") else [])}
-        except Exception as e:
-            _log_write(f"[AutoCompleter] serialise_markov failed: {e}")
+                        out[prev] = {}
         return out
 
     def _shutdown(self) -> None:
-        """Persist state on interpreter exit."""
-        _log_write("[AutoCompleter] shutdown: saving state")
+        """Called at interpreter exit (registered via atexit)."""
+        # allow idempotent close
+        if getattr(self, "_closed", False):
+            return
+        _log("[AutoCompleter] shutdown: persisting state")
         try:
             save_markov(self._serialise_markov())
         except Exception as e:
-            _log_write(f"[AutoCompleter] save_markov failed: {e}")
-
+            _log(f"[AutoCompleter] save_markov failed: {e}")
         try:
             ctx = getattr(self.hp, "ctx", None)
             if ctx:
-                # prefer ctx.export_state/ctx.save, otherwise best-effort history shape
+                # prefer export_state/save
                 try:
                     if hasattr(ctx, "export_state"):
                         save_user_cache(ctx.export_state())
-                    elif hasattr(ctx, "export"):
-                        save_user_cache(ctx.export())
-                    elif hasattr(ctx, "hist") and hasattr(ctx.hist, "most_common"):
-                        hist_items = [{"word": w, "count": int(c)} for w, c in ctx.hist.most_common(200)]
-                        save_user_cache({"history": hist_items, "saved_at": int(time.time())})
+                    elif hasattr(ctx, "save"):
+                        # some ctx.save writes directly, still provide consistent cache shape
+                        ctx.save()
+                        # try to call export_state afterwards if present
+                        if hasattr(ctx, "export_state"):
+                            save_user_cache(ctx.export_state())
+                        else:
+                            save_user_cache({"history": [], "saved_at": int(time.time())})
                     else:
-                        save_user_cache({"history": [], "saved_at": int(time.time())})
-                    _log_write("[AutoCompleter] user context saved")
+                        # fallback to hist-like structure
+                        if hasattr(ctx, "hist") and hasattr(ctx.hist, "most_common"):
+                            hist_items = [{"word": w, "count": int(c)} for w, c in ctx.hist.most_common(200)]
+                            save_user_cache({"history": hist_items, "saved_at": int(time.time())})
+                        else:
+                            save_user_cache({"history": [], "saved_at": int(time.time())})
+                    _log("[AutoCompleter] user context saved")
                 except Exception as e:
-                    _log_write(f"[AutoCompleter] save_user_cache failed: {e}")
+                    _log(f"[AutoCompleter] save_user_cache failed: {e}")
         except Exception as e:
-            _log_write(f"[AutoCompleter] shutdown user save failed: {e}")
+            _log(f"[AutoCompleter] shutdown error: {e}")
+        finally:
+            self._closed = True
 
-    # Public API -------------------------------------------------------
+    # Public API --------------------------------------------
     def suggest(self, prefix: str, topn: int = 5) -> List[Tuple[str, float]]:
-        """Return top predictions for a prefix. Small wrapper to HybridPredictor.suggest."""
+        """Return top predictions for a prefix via HybridPredictor.suggest."""
         try:
             return self.hp.suggest(prefix, topn=topn)
         except Exception as e:
-            _log_write(f"[AutoCompleter] suggest failed: {e}")
+            _log(f"[AutoCompleter] suggest error: {e}")
             return []
 
     def train_lines(self, lines: Iterable[str]) -> None:
-        """Bulk-train the internal predictors from a corpus."""
+        """Train internal predictors with corpus lines."""
         try:
-            lines = list(lines)
-            self.hp.train(lines)
+            self.hp.train(list(lines))
         except Exception as e:
-            _log_write(f"[AutoCompleter] train_lines failed: {e}")
+            _log(f"[AutoCompleter] train_lines error: {e}")
 
     def retrain(self, sentence: str) -> None:
-        """Incremental learning from a newly entered sentence."""
+        """Incremental learning from a new sentence."""
         try:
             self.hp.retrain(sentence)
         except Exception as e:
-            _log_write(f"[AutoCompleter] retrain failed: {e}")
+            _log(f"[AutoCompleter] retrain error: {e}")
 
-    def accept(self, word: str, context: str | None = None, source: str | None = None) -> None:
-        """Record that a suggestion was accepted."""
+    def accept(self, word: str, context: Optional[str] = None, source: Optional[str] = None) -> None:
+        """Record acceptance of a suggestion. Delegates to HybridPredictor.accept or Reinforcement API."""
         try:
-            # hybrid predictor exposes accept/reject
             if hasattr(self.hp, "accept"):
                 self.hp.accept(word, context=context, source=source)
             elif hasattr(self.hp, "record_accept"):
                 self.hp.record_accept(context or "", word, source)
             else:
-                _log_write("[AutoCompleter] accept: no feedback API available on HybridPredictor")
+                _log("[AutoCompleter] accept: HybridPredictor has no accept API")
         except Exception as e:
-            _log_write(f"[AutoCompleter] accept failed: {e}")
+            _log(f"[AutoCompleter] accept error: {e}")
+
+    def save(self) -> None:
+        """Explicitly persist state (same logic as atexit)."""
+        try:
+            self._shutdown()
+        except Exception as e:
+            _log(f"[AutoCompleter] save failed: {e}")
 
     def stats(self) -> Dict[str, Any]:
-        """Return simple diagnostics for UI/tests."""
+        """Return diagnostic info (uptime, vocab size if available)."""
+        uptime = round(time.time() - getattr(self, "_started_at", time.time()), 1)
+        vocab_size = 0
         try:
-            vocab_size = 0
             trie = getattr(self.hp, "trie", None)
             if trie and hasattr(trie, "size"):
-                try:
-                    vocab_size = trie.size()
-                except Exception:
-                    # fallback: iterate root-level
-                    vocab_size = 0
-            uptime = round(time.time() - getattr(self, "_started_at", time.time()), 1)
-            return {"uptime_s": uptime, "vocab_size": vocab_size}
+                vocab_size = trie.size()
+            else:
+                # fallback: if markov provides a vocabulary_size or uni counter
+                mk = getattr(self.hp, "markov", None) or getattr(self.hp, "_markov", None)
+                if mk and hasattr(mk, "vocabulary_size"):
+                    vocab_size = mk.vocabulary_size()
+                elif mk and hasattr(mk, "_uni"):
+                    vocab_size = len(getattr(mk, "_uni", []))
         except Exception:
-            return {"uptime_s": 0.0, "vocab_size": 0}
+            vocab_size = 0
+        return {"uptime_s": uptime, "vocab_size": int(vocab_size)}
+
+    # context manager support
+    def close(self) -> None:
+        """Explicit close equivalent to shutdown(); idempotent."""
+        self._shutdown()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
 
 # quick manual test
 if __name__ == "__main__":
     ac = AutoCompleter()
     print("Try: ac.suggest('the')")
+
