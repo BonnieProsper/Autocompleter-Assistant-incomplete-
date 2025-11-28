@@ -1,100 +1,153 @@
 # markov_predictor.py
-# small first-order Markov next-word predictor, trained on plain sentences, used by HybridPredictor
+# first-order Markov language model for next-token prediction.
 
 from __future__ import annotations
-import re
+from dataclasses import dataclass
+from typing import Dict, List, Iterable, Tuple, Optional
 from collections import defaultdict, Counter
-from typing import Dict, List, Tuple, Iterable
+import math
+import re
 
 Word = str
-Count = int
-NextList = List[Tuple[Word, Count]]
+Score = float
+NextList = List[Tuple[Word, Score]]
+
+@dataclass(frozen=True)
+class MarkovConfig:
+    """
+    Configurable knobs for smoothing, tokenisation, and top-k behaviour.
+    """
+    topn: int = 5
+    min_token_len: int = 1
+    smoothing_k: float = 0.5  # laplace smoothing constant
+    lowercase: bool = True
 
 class MarkovPredictor:
     """
-    Simple first-order Markov chain:
-        prev_word -> Counter(next_word)
+    First-order Markov chain predictor with:
+      - configurable Laplace smoothing
+      - robust tokenisation
+      - probability-normalized scoring
+      - serialization helpers
+      - public API
 
-    Intentionally simple, tends to produce
-    "local" predictions (what usually follows X),
-    which blend nicely with embeddings + semantic predictors.
+    MarkovPredictor produces probabilistic scores not raw counts, 
+    making it a better resource for FusionRanker.
     """
-    _token_re = re.compile(r"\w+")
 
-    def __init__(self) -> None:
-        # prev -> Counter(next)
+    _token_re = re.compile(r"[A-Za-z0-9']+")   # improved tokenizer (keeps contractions)
+
+    def __init__(self, config: Optional[MarkovConfig] = None) -> None:
+        self.cfg = config or MarkovConfig()
+        # prev → Counter(next)
         self._chain: Dict[Word, Counter] = defaultdict(Counter)
-        # unigram fallback (rarely used but useful)
+        # unigram model
         self._uni: Counter = Counter()
-        # keep track of total tokens for potential smoothing/normalization (future)
-        self._total = 0
+        # total tokens
+        self._total: int = 0
 
-    # training -----------------------------------------------------------------------
-    def train_sentence(self, text: str) -> None:
-        """Train on a single sentence. Very forgiving, empty/short inputs are ignored."""
+    # ------------------------------------------------------------------
+    # Tokenization
+    # ------------------------------------------------------------------
+    def _tokenize(self, text: str) -> List[Word]:
         if not text:
-            return
+            return []
+        tokens = self._token_re.findall(text)
+        if self.cfg.lowercase:
+            tokens = [t.lower() for t in tokens]
+        return [t for t in tokens if len(t) >= self.cfg.min_token_len]
 
-        toks = self._token_re.findall(text.lower())
+    # ------------------------------------------------------------------
+    # Training
+    # ------------------------------------------------------------------
+    def train_sentence(self, text: str) -> None:
+        toks = self._tokenize(text)
         if not toks:
             return
-            
-        # update unigrams
+
         self._uni.update(toks)
         self._total += len(toks)
-        # update bigrams
-        # (small pitfalls: trailing punctuation, numbers, weird unicode - regex handles 80% fine)
+
         for a, b in zip(toks, toks[1:]):
             self._chain[a][b] += 1
 
     def train_many(self, sentences: Iterable[str]) -> None:
-        """Simple bulk training."""
         for s in sentences:
             self.train_sentence(s)
 
-    # prediction ---------------------------------------------------------------
-    def top_next(self, prev: Word, topn: int = 5) -> NextList:
+    # ------------------------------------------------------------------
+    # Probability computation
+    # ------------------------------------------------------------------
+    def _compute_probs(self, counter: Counter) -> Dict[Word, Score]:
         """
-        Returns a list of (word, count) for the most common next words.
-        If prev not in chain, fall back to global unigrams.
-        The caller (HybridPredictor) will rescale these counts
-        into actual scores and merge with embeddings/semantic sources.
+        Convert a next-word Counter into a probability distribution
+        with Laplace smoothing.
         """
+        k = self.cfg.smoothing_k
+        vocab_size = len(self._uni)
+
+        total = sum(counter.values())
+        denom = total + k * vocab_size
+
+        return {
+            w: (c + k) / denom
+            for w, c in counter.items()
+        }
+
+    # ------------------------------------------------------------------
+    # Prediction (public API)
+    # ------------------------------------------------------------------
+    def top_next(self, prev: Word, topn: Optional[int] = None) -> NextList:
+        """
+        Returns a list of tuples (word, probability) representing
+        the most likely next tokens after 'prev'.
+        If prev is unseen it uses unigram probabilities.
+        """
+        n = topn or self.cfg.topn
+
         if not prev:
-            # completely empty fragment → unigrams
-            return self._uni.most_common(topn)
+            return self._top_unigrams(n)
 
-        key = prev.lower()
-        nxt = self._chain.get(key)
-        if nxt:
-            return nxt.most_common(topn)
+        key = prev.lower() if self.cfg.lowercase else prev
+        counter = self._chain.get(key)
 
-        # unseen prev word → unigram fallback
-        return self._uni.most_common(topn)
+        if not counter:
+            return self._top_unigrams(n)
 
-    # optional helpers
+        probs = self._compute_probs(counter)
+        return sorted(probs.items(), key=lambda x: x[1], reverse=True)[:n]
+
+    def _top_unigrams(self, n: int) -> NextList:
+        if not self._uni:
+            return []
+        total = sum(self._uni.values())
+        return [
+            (w, c / total)
+            for w, c in self._uni.most_common(n)
+        ]
+
+    # ------------------------------------------------------------------
+    # Introspection helpers
+    # ------------------------------------------------------------------
     def vocabulary_size(self) -> int:
-        """Rough vocabulary measure (unique token count)."""
         return len(self._uni)
 
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
     def save_state(self) -> dict:
-        """
-        Compact serializable snapshot.
-        (Used optionally by persistence layer, deliberately lightweight.)
-        """
         return {
             "chain": {k: dict(v) for k, v in self._chain.items()},
             "uni": dict(self._uni),
             "total": self._total,
+            "config": self.cfg.__dict__,
         }
 
     def load_state(self, data: dict) -> None:
-        """Restore from save_state() output. Missing fields ignored."""
         try:
             chain = data.get("chain", {})
             self._chain = defaultdict(Counter, {k: Counter(v) for k, v in chain.items()})
             self._uni = Counter(data.get("uni", {}))
             self._total = int(data.get("total", 0))
         except Exception:
-            # if bad file or format mismatch, fail softly
             pass
