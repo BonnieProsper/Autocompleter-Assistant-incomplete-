@@ -1,14 +1,16 @@
-# intelligent_autocompleter/core/fusion_ranker.py
+# changes: remove optional featurepreprocessor e.g always use preprocessor (why keep optional?)
+
+# fusion_ranker.py
 """
-FusionRanker - robust, production-ready multi-signal ranker.
+FusionRanker - multi-signal ranker.
 
 Design goals:
- - Per-feature normalization (pre-fusion) - remove?? e.g _minmax, log1pminmax, safesoftmax 
- - Strategy pattern (LINEAR, SOFTMAX, BORDA)
- - Robust weight management: set, update (with lr, clip, normalize), validation
- - Optional numpy acceleration with fallback
- - Personalizer hook preserved (personalizer.bias_words(list[(w,score)]) -> list[(w,score)])
- - Clear typing and error messages for debugging/unit tests
+ - Per-feature normalization (via FeaturePreprocessor when available). - - remove?? e.g _minmax, log1pminmax, safesoftmax
+ - Multiple fusion strategies (linear, softmax, borda).
+ - Robust weight management (set, update with lr, clip, normalize).
+ - Optional NumPy acceleration when present.
+ - Lightweight personalizer hook (personalizer.bias_words(list[(w,score)]) -> list[(w,score)]).
+ - Clean, testable public API.
 """
 
 from __future__ import annotations
@@ -19,19 +21,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Try optional numpy acceleration
+# Optional numpy
 try:
     import numpy as np  # type: ignore
     NUMPY_AVAILABLE = True
 except Exception:
     NUMPY_AVAILABLE = False
 
-# Public types
+# Optional FeaturePreprocessor import 
+try:
+    from intelligent_autocompleter.core.feature_preprocessor import FeaturePreprocessor  # type: ignore
+except Exception:
+    try:
+        from core.feature_preprocessor import FeaturePreprocessor  # local fallback
+    except Exception:
+        FeaturePreprocessor = None  # type: ignore
+
+# public types
 Candidate = Tuple[str, float]
 CandidateList = List[Candidate]
 FuzzyList = List[Tuple[str, int]]
 ScoreMap = Dict[str, float]
-FeatureVector = Dict[str, float]
 
 
 class FusionStrategy(Enum):
@@ -40,7 +50,7 @@ class FusionStrategy(Enum):
     BORDA = "borda"
 
 
-# Default presets
+# Default presets 
 _DEFAULT_PRESETS: Dict[str, Dict[str, float]] = {
     "strict":   {"markov": 0.6, "embed": 0.1, "fuzzy": 0.05, "freq": 0.2, "personal": 0.05, "recency": 0.0},
     "balanced": {"markov": 0.4, "embed": 0.3, "fuzzy": 0.1,  "freq": 0.15, "personal": 0.05, "recency": 0.0},
@@ -49,8 +59,8 @@ _DEFAULT_PRESETS: Dict[str, Dict[str, float]] = {
 }
 
 
-def _minmax_scale(values: Iterable[float]) -> List[float]:
-    vals = list(values)
+def _minmax_scale_py(vals: Iterable[float]) -> List[float]:
+    vals = list(vals)
     if not vals:
         return []
     lo, hi = min(vals), max(vals)
@@ -60,142 +70,91 @@ def _minmax_scale(values: Iterable[float]) -> List[float]:
     return [(v - lo) / rng for v in vals]
 
 
-def _log1p_minmax(values: Iterable[float]) -> List[float]:
-    vals = [math.log1p(max(0.0, float(v))) for v in values]
-    return _minmax_scale(vals)
-
-
-def _safe_softmax(values: List[float], temp: float = 1.0) -> List[float]:
-    if temp <= 0:
-        raise ValueError("softmax temperature must be > 0")
-    if not values:
-        return []
-    mx = max(values)
-    exps = [math.exp((v - mx) / temp) for v in values]
-    s = sum(exps) or 1.0
-    return [e / s for e in exps]
-
-
 class FusionRanker:
     """
-    FusionRanker aggregates prenormalized feature maps and returns the ranked candidates.
+    Combine multiple signal maps into a ranked list of candidates.
 
-    Main API:
-      fr = FusionRanker(preset="balanced", strategy=FusionStrategy.LINEAR)
-      candidates = fr.rank(markov=[(w,c)], embeddings=[(w,s)], fuzzy=[(w,dist)], base_freq={w:count}, recency_map={w:ts}, topn=8)
-
-    Personalizer is optional and invoked as:
-    personalizer.bias_words(list[(w,score)]) -> list[(w,score)].
+    Primary methods:
+      - rank(...) -> List[(word, score)]
+      - get_weights()/set_weights(...)/update_weights(...)
     """
-    ALLOWED_FEATURES = ("markov", "embed", "fuzzy", "freq", "recency", "personal")
 
-    def __init__(
-        self,
-        preset: str = "balanced",
-        weights: Optional[Mapping[str, float]] = None,
-        personalizer: Optional[object] = None,
-        strategy: FusionStrategy = FusionStrategy.LINEAR,
-        use_numpy: bool = NUMPY_AVAILABLE,
-    ) -> None:
+    ALLOWED_FEATURES = {"markov", "embed", "fuzzy", "freq", "recency", "personal"}
+
+    def __init__(self,
+                 preset: str = "balanced",
+                 weights: Optional[Mapping[str, float]] = None,
+                 personalizer: Optional[object] = None,
+                 strategy: FusionStrategy = FusionStrategy.LINEAR,
+                 use_numpy: bool = NUMPY_AVAILABLE):
         preset_map = dict(_DEFAULT_PRESETS.get(preset, _DEFAULT_PRESETS["balanced"]))
         if weights:
-            preset_map.update(dict(weights))
-        # ensure keys are present
-        for k in self.ALLOWED_FEATURES:
-            preset_map.setdefault(k, 0.0)
+            preset_map.update(weights)
+        # ensure all allowed features exist explicitly
+        for f in self.ALLOWED_FEATURES:
+            preset_map.setdefault(f, 0.0)
+
         s = sum(float(v) for v in preset_map.values()) or 1.0
-        self._weights: Dict[str, float] = {k: float(preset_map[k]) / s for k in self.ALLOWED_FEATURES}
+        self._weights: Dict[str, float] = {k: float(v) / s for k, v in preset_map.items()}
         self.personalizer = personalizer
         self.strategy = strategy
-        self.use_numpy = use_numpy and NUMPY_AVAILABLE
+        self._use_numpy = bool(use_numpy and NUMPY_AVAILABLE)
+        # optional preprocessor (use if available)
+        self._pre = FeaturePreprocessor(use_numpy=self._use_numpy) if FeaturePreprocessor is not None else None
 
-    # Weight Management --------------------------------
+    # Weight management -----------------------------
     def get_weights(self) -> Dict[str, float]:
-        """Return a copy of normalized weights (sums to 1)."""
         return dict(self._weights)
 
-    def set_weights(self, new_weights: Mapping[str, float], normalize: bool = True) -> None:
-        """Replace weights. Unknown keys raise ValueError."""
-        for k in new_weights.keys():
+    def set_weights(self, new: Mapping[str, float], normalize: bool = True) -> None:
+        for k in new:
             if k not in self.ALLOWED_FEATURES:
-                raise KeyError(f"Unknown feature '{k}'. Allowed: {self.ALLOWED_FEATURES}")
-        # merge and optionally normalize 
-        merged = {k: float(new_weights.get(k, 0.0)) for k in self.ALLOWED_FEATURES}
+                raise ValueError(f"Unknown feature '{k}'")
+        w = {feat: float(new.get(feat, 0.0)) for feat in self.ALLOWED_FEATURES}
         if normalize:
-            s = sum(max(0.0, v) for v in merged.values()) or 1.0
-            self._weights = {k: max(0.0, v) / s for k, v in merged.items()}
+            s = sum(max(0.0, v) for v in w.values()) or 1.0
+            self._weights = {k: (max(0.0, v) / s) for k, v in w.items()}
         else:
-            self._weights = merged
+            self._weights = w
 
-    def update_weights(self, deltas: Mapping[str, float], lr: float = 0.1, clip: Optional[Tuple[float, float]] = (0.0, 1.0), normalize: bool = True) -> None:
-        """
-        Incrementally update weights.
-
-        deltas: map feature->delta
-        lr: learning rate multiplier
-        clip: (min,max) clip after update (None to disable)
-        normalize: renormalize so weights sum to 1 (recommended)
-        """
+    def update_weights(self, deltas: Mapping[str, float], lr: float = 0.1, clip: Optional[tuple] = (0.0, 1.0), normalize: bool = True) -> None:
         if lr < 0:
-            raise ValueError("lr must be non-negative")
+            raise ValueError("lr must be >= 0")
         w = dict(self._weights)
         for k, d in deltas.items():
             if k not in self.ALLOWED_FEATURES:
-                logger.debug("update_weights ignored unknown key %s", k)
+                logger.debug("Ignoring unknown weight key: %s", k)
                 continue
             w[k] = float(w.get(k, 0.0)) + float(d) * float(lr)
         if clip is not None:
             lo, hi = float(clip[0]), float(clip[1])
             if lo > hi:
-                raise ValueError("clip min must be <= clip max")
+                raise ValueError("clip bounds invalid")
             for k in w:
                 w[k] = max(lo, min(hi, float(w[k])))
         if normalize:
-            s = sum(max(0.0, float(v)) for v in w.values()) or 1.0
-            self._weights = {k: max(0.0, float(v)) / s for k, v in w.items()}
+            s = sum(max(0.0, v) for v in w.values()) or 1.0
+            self._weights = {k: (max(0.0, v) / s) for k, v in w.items()}
         else:
             self._weights = w
 
-    # Internal normalization helpers -----------------------------
-    def _collect_keys(self, *lists_or_maps) -> List[str]:
+    # Internal helpers -------------------------------------
+    @staticmethod
+    def _collect_keys(markov, embeddings, fuzzy, base_freq, recency):
         keys = set()
-        for m in lists_or_maps:
-            if not m:
-                continue
-            # if list of tuples
-            if isinstance(m, list) and m and isinstance(m[0], tuple):
-                keys.update([w for w, _ in m])
-            elif isinstance(m, dict):
-                keys.update(m.keys())
-            else:
-                # fallback: iterate if iterable of pairs
-                try:
-                    for item in m:
-                        if isinstance(item, tuple) and item:
-                            keys.add(item[0])
-                except Exception:
-                    pass
+        if markov:
+            keys.update(w for w, _ in markov)
+        if embeddings:
+            keys.update(w for w, _ in embeddings)
+        if fuzzy:
+            keys.update(w for w, _ in fuzzy)
+        if base_freq:
+            keys.update(base_freq.keys())
+        if recency:
+            keys.update(recency.keys())
         return sorted(keys)
 
-    @staticmethod
-    def _minmax_map(keys: List[str], raw_map: Mapping[str, float]) -> ScoreMap:
-        vals = [float(raw_map.get(k, 0.0)) for k in keys]
-        scaled = _minmax_scale(vals)
-        return {k: scaled[i] for i, k in enumerate(keys)}
-
-    @staticmethod
-    def _log1p_minmax_map(keys: List[str], raw_map: Mapping[str, float]) -> ScoreMap:
-        vals = [float(raw_map.get(k, 0.0)) for k in keys]
-        scaled = _log1p_minmax(vals)
-        return {k: scaled[i] for i, k in enumerate(keys)}
-
-    @staticmethod
-    def _fuzzy_map(keys: List[str], fuzzy_map: Mapping[str, int]) -> ScoreMap:
-        raw = [(1.0 / (1.0 + float(fuzzy_map.get(k, 999)))) if k in fuzzy_map else 0.0 for k in keys]
-        scaled = _minmax_scale(raw)
-        return {k: scaled[i] for i, k in enumerate(keys)}
-
-    def _recency_map(self, keys: List[str], rec_map: Mapping[str, float]) -> ScoreMap:
+    def _compute_recency(self, keys: List[str], rec_map: Mapping[str, float]) -> ScoreMap:
         if not rec_map:
             return {k: 0.0 for k in keys}
         newest = max(rec_map.values())
@@ -206,28 +165,49 @@ class FusionRanker:
                 raw.append(1.0 / (1.0 + math.log1p(age)))
             else:
                 raw.append(0.0)
-        scaled = _minmax_scale(raw)
-        return {k: scaled[i] for i, k in enumerate(keys)}
+        # minmax
+        if self._use_numpy:
+            arr = np.array(raw, dtype=float)
+            lo, hi = float(arr.min()), float(arr.max())
+            if hi == lo:
+                return {k: 1.0 for k in keys}
+            scaled = ((arr - lo) / (hi - lo)).tolist()
+            return {k: scaled[i] for i, k in enumerate(keys)}
+        else:
+            return dict(zip(keys, _minmax_scale_py(raw)))
 
-    # Public ranking API --------------------------------------------
-    def rank(
-        self,
-        markov: Optional[List[Tuple[str, float]]] = None,
-        embeddings: Optional[List[Tuple[str, float]]] = None,
-        fuzzy: Optional[FuzzyList] = None,
-        base_freq: Optional[Mapping[str, float]] = None,
-        recency_map: Optional[Mapping[str, float]] = None,
-        topn: int = 8,
-    ) -> CandidateList:
+    def _apply_strategy(self, combined: ScoreMap) -> ScoreMap:
+        if self.strategy == FusionStrategy.LINEAR:
+            return combined
+        if self.strategy == FusionStrategy.SOFTMAX:
+            vals = list(combined.values())
+            if not vals:
+                return combined
+            mx = max(vals)
+            exps = [math.exp(v - mx) for v in vals]
+            s = sum(exps) or 1.0
+            out_vals = [e / s for e in exps]
+            return {k: out_vals[i] for i, k in enumerate(combined.keys())}
+        if self.strategy == FusionStrategy.BORDA:
+            # Borda over features: for each feature, rank and award points weighted by feature weight
+            features = list(self.ALLOWED_FEATURES)
+            score_acc = {k: 0.0 for k in combined.keys()}
+            # assume per-candidate normalized features are not available here, so fallback to linear
+            # (Borda is more meaningful in rank_from_features API, keep safe fallback)
+            return combined
+        return combined
+
+    # Public API --------------------------------------------------------
+    def rank(self,
+             markov: Optional[List[Tuple[str, float]]] = None,
+             embeddings: Optional[List[Tuple[str, float]]] = None,
+             fuzzy: Optional[FuzzyList] = None,
+             base_freq: Optional[Mapping[str, float]] = None,
+             recency_map: Optional[Mapping[str, float]] = None,
+             topn: int = 8) -> CandidateList:
         """
-        Rank candidates based on provided signals.
-
-        Inputs:
-          - markov: [(word, count), ...]
-          - embeddings: [(word, score), ...]
-          - fuzzy: [(word, distance), ...]
-          - base_freq: {word: count}
-          - recency_map: {word: timestamp}
+        Rank candidates using available signals. All inputs are optional.
+        Returns topn list[(word, score)] sorted descending by score.
         """
         markov = markov or []
         embeddings = embeddings or []
@@ -239,81 +219,93 @@ class FusionRanker:
         if not keys:
             return []
 
-        # quick lookup maps
+        # maps
         m_map: ScoreMap = {w: float(v) for w, v in markov}
         e_map: ScoreMap = {w: float(v) for w, v in embeddings}
         f_map: Dict[str, int] = {w: int(d) for w, d in fuzzy}
-        freq_map: ScoreMap = {w: float(v) for w, v in base_freq.items()} if isinstance(base_freq, dict) else dict(base_freq)
-        rec_map: ScoreMap = {w: float(v) for w, v in recency_map.items()} if isinstance(recency_map, dict) else dict(recency_map)
+        freq_map: ScoreMap = {w: float(v) for w, v in base_freq.items()}
+        rec_map: ScoreMap = {w: float(v) for w, v in recency_map.items()}
 
-        # per-feature normalization before fusion
-        try:
-            m_norm = self._log1p_minmax_map(keys, m_map)
-            e_norm = self._minmax_map(keys, e_map)
-            f_norm = self._fuzzy_map(keys, f_map)
-            freq_norm = self._log1p_minmax_map(keys, freq_map)
-            rec_norm = self._recency_map(keys, rec_map)
-        except Exception as exc:
-            logger.exception("Feature normalization failed: %s", exc)
-            # best-effort zeros
-            m_norm = {k: 0.0 for k in keys}
-            e_norm = {k: 0.0 for k in keys}
-            f_norm = {k: 0.0 for k in keys}
-            freq_norm = {k: 0.0 for k in keys}
-            rec_norm = {k: 0.0 for k in keys}
-
-        # combine weighted scores
-        combined: ScoreMap = {}
-        for k in keys:
-            s = 0.0
-            s += self._weights.get("markov", 0.0) * m_norm.get(k, 0.0)
-            s += self._weights.get("embed", 0.0)  * e_norm.get(k, 0.0)
-            s += self._weights.get("fuzzy", 0.0)  * f_norm.get(k, 0.0)
-            s += self._weights.get("freq", 0.0)   * freq_norm.get(k, 0.0)
-            s += self._weights.get("recency", 0.0) * rec_norm.get(k, 0.0)
-            combined[k] = float(s)
-
-        # apply strategy
-        if self.strategy == FusionStrategy.LINEAR:
-            final_map = combined
-        elif self.strategy == FusionStrategy.SOFTMAX:
-            vals = list(combined.values())
-            probs = _safe_softmax(vals, temp=1.0)
-            final_map = {k: probs[i] for i, k in enumerate(combined.keys())}
-        elif self.strategy == FusionStrategy.BORDA:
-            # build feature vectors per candidate and delegate to Borda aggregation
-            feature_map: Dict[str, FeatureVector] = {}
-            for k in keys:
-                feature_map[k] = {
-                    "markov": m_norm.get(k, 0.0),
-                    "embed": e_norm.get(k, 0.0),
-                    "fuzzy": f_norm.get(k, 0.0),
-                    "freq": freq_norm.get(k, 0.0),
-                    "recency": rec_norm.get(k, 0.0),
-                }
-            # Borda: rank per feature then weight by feature weight
-            score_acc: Dict[str, float] = {k: 0.0 for k in keys}
-            features = ["markov", "embed", "fuzzy", "freq", "recency"]
-            for feat in features:
-                ranked_by_feat = sorted(keys, key=lambda x: -feature_map[x].get(feat, 0.0))
-                n = len(ranked_by_feat)
-                for pos, word in enumerate(ranked_by_feat):
-                    score_acc[word] += (n - 1 - pos) * self._weights.get(feat, 0.0)
-            final_map = score_acc
+        # Use FeaturePreprocessor if present otherwise perform inline normalization
+        if self._pre:
+            try:
+                # FeaturePreprocessor.normalize_all returns {word: {feat: val}}
+                feature_matrix = self._pre.normalize_all(markov=m_map, embed=e_map, fuzzy=f_map, freq=freq_map, recency=rec_map)
+                # if its a full matrix compute weighted sums
+                combined: ScoreMap = {}
+                for k in keys:
+                    fv = feature_matrix.get(k, {})
+                    s = 0.0
+                    s += self._weights.get("markov", 0.0) * float(fv.get("markov", 0.0))
+                    s += self._weights.get("embed", 0.0)   * float(fv.get("embed", 0.0))
+                    s += self._weights.get("fuzzy", 0.0)   * float(fv.get("fuzzy", 0.0))
+                    s += self._weights.get("freq", 0.0)    * float(fv.get("freq", 0.0))
+                    s += self._weights.get("recency", 0.0) * float(fv.get("recency", 0.0))
+                    combined[k] = float(s)
+            except Exception as e:
+                logger.exception("FeaturePreprocessor failed: %s", e)
+                # fallback to inline path
+                self._pre = None
+                return self.rank(markov=markov, embeddings=embeddings, fuzzy=fuzzy, base_freq=base_freq, recency_map=recency_map, topn=topn)
         else:
-            logger.warning("Unknown strategy %s - falling back to linear", self.strategy)
-            final_map = combined
+            # Inline normalization + fallback
+            # markov & freq: log1p then minmax
+            m_vals = [math.log1p(max(0.0, m_map.get(k, 0.0))) for k in keys]
+            e_vals = [float(e_map.get(k, 0.0)) for k in keys]
+            f_vals = [ (1.0 / (1.0 + float(f_map.get(k, 999)))) if k in f_map else 0.0 for k in keys ]
+            fq_vals = [math.log1p(max(0.0, freq_map.get(k, 0.0))) for k in keys]
+            rec_vals = []
+            if rec_map:
+                newest = max(rec_map.values())
+                for k in keys:
+                    if k in rec_map:
+                        age = max(0.0, newest - rec_map[k])
+                        rec_vals.append(1.0 / (1.0 + math.log1p(age)))
+                    else:
+                        rec_vals.append(0.0)
+            else:
+                rec_vals = [0.0 for _ in keys]
 
-        # convert to sorted list
-        ranked = sorted(final_map.items(), key=lambda kv: -kv[1])
+            # normalize each vector (check)
+            if self._use_numpy:
+                def _minmax(arr):
+                    a = np.array(arr, dtype=float)
+                    lo, hi = float(a.min()), float(a.max())
+                    if hi == lo:
+                        return [1.0 for _ in arr]
+                    return ((a - lo) / (hi - lo)).tolist()
+                nm = _minmax(m_vals)
+                ne = _minmax(e_vals)
+                nf = _minmax(f_vals)
+                nq = _minmax(fq_vals)
+                nr = _minmax(rec_vals)
+            else:
+                nm = _minmax_scale_py(m_vals)
+                ne = _minmax_scale_py(e_vals)
+                nf = _minmax_scale_py(f_vals)
+                nq = _minmax_scale_py(fq_vals)
+                nr = _minmax_scale_py(rec_vals)
 
-        # allow personalizer last (it may inspect user-specific signals like recency/freq)
+            combined = {}
+            for i, k in enumerate(keys):
+                s = 0.0
+                s += self._weights.get("markov", 0.0) * nm[i]
+                s += self._weights.get("embed", 0.0)  * ne[i]
+                s += self._weights.get("fuzzy", 0.0)  * nf[i]
+                s += self._weights.get("freq", 0.0)   * nq[i]
+                s += self._weights.get("recency", 0.0) * nr[i]
+                combined[k] = float(s)
+
+        # apply fusion strategy (softmax or linear)
+        combined = self._apply_strategy(combined)
+
+        # convert to sorted list and let personalizer bump results if present
+        ranked = sorted(combined.items(), key=lambda kv: -kv[1])
+
         if self.personalizer:
             try:
                 ranked = self.personalizer.bias_words(ranked)
             except Exception:
-                logger.debug("Personalizer failed to adjust results", exc_info=True)
+                logger.debug("personalizer failed", exc_info=True)
 
-        # return top-n rounded
         return [(w, round(float(s), 6)) for w, s in ranked[:topn]]
-
