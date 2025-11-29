@@ -76,7 +76,7 @@ class FusionRanker:
 
     Primary methods:
       - rank(...) -> List[(word, score)]
-      - get_weights()/set_weights(...)/update_weights(...)
+      - get_weights()/set_weights()/update_weights()
     """
 
     ALLOWED_FEATURES = {"markov", "embed", "fuzzy", "freq", "recency", "personal"}
