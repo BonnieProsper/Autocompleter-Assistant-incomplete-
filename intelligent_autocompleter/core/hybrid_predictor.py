@@ -9,6 +9,8 @@ Purpose:
  - Record user feedback (accepted/rejected) into ReinforcementLearner and nudge weights based on this feedback.
  - Offer explain() that returns component contributions for debugging and /explain CLI.
  - Support optional PluginRegistry for extension points.
+
+ e.g take a fragment and return complete ranked predictions
 """
 
 from __future__ import annotations
@@ -103,6 +105,71 @@ class HybridPredictor:
         # last suggestion -> inferred source mapping (used by feedback API)
         self._last_sources: Dict[str, str] = {}
         self.last_ranked: List[Candidate] = []
+
+ """Addition to add to/replace __init__, check/integrate properly, is this version or earlier better
+ def __init__(
+        self,
+        markov,
+        semantic_engine,
+        bk_tree,
+        ranker,
+        personalizer,
+        rl_agent,
+        logger
+    ) -> None:
+        self.markov = markov
+        self.semantic = semantic_engine
+        self.bk = bk_tree
+        self.ranker = ranker
+        self.personalizer = personalizer
+        self.rl = rl_agent
+        self.log = logger
+
+    # -------------------------------
+    # Main inference hot path
+    # -------------------------------
+    def suggest(
+        self,
+        fragment: str,
+        top_k: int = 10
+    ) -> List[Tuple[str, float]]:
+        """Return top-k ranked suggestions for an input fragment."""
+
+        frag = fragment.strip().lower()
+        if not frag:
+            return []
+
+        try:
+            # 1) Generate raw candidate buckets
+            markov_raw = self.markov.predict_next(frag)
+            semantic_raw = self.semantic.similar_words(frag)
+            fuzzy_raw = self.bk.search(frag, max_dist=2)
+
+            # 2) Apply personalization bias + RL reward shaping
+            markov_adj = self.personalizer.adjust_map(markov_raw, source="markov")
+            semantic_adj = self.personalizer.adjust_map(semantic_raw, source="semantic")
+            fuzzy_adj = self.personalizer.adjust_map(fuzzy_raw, source="fuzzy")
+
+            markov_final = self.rl.adjust("markov", frag, markov_adj)
+            semantic_final = self.rl.adjust("semantic", frag, semantic_adj)
+            fuzzy_final = self.rl.adjust("fuzzy", frag, fuzzy_adj)
+
+            # 3) Now all maps are normalized maps[str -> float]
+            #    So we use the fast-path API:
+            ranked = self.ranker.rank_normalized(
+                markov=markov_final,
+                semantic=semantic_final,
+                fuzzy=fuzzy_final,
+                top_k=top_k
+            )
+
+            return ranked
+
+        except Exception as e:
+            self.log.error(f"HybridPredictor.suggest failed for '{fragment}': {e}")
+            return []
+
+ """
 
     # Training/incremental -------------------------------------------------
     def train(self, lines: Iterable[str]) -> None:
