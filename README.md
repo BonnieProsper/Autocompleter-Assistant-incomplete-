@@ -23,3 +23,26 @@ cd Autocompleter-Assistant
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
+
+## Running Tests
+
+Install dependencies:
+
+    pip install -r requirements.txt
+
+Run the test suite:
+
+    pytest -q
+
+Run with coverage:
+
+    pytest --cov=.
+
+Run linting:
+
+    ruff check .
+
+Run type checks:
+
+    mypy .
+
