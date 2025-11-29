@@ -19,3 +19,22 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+# new addition below, tune mypy strictness later, has safe deaults so CI passes intially
+# check below against above code, overlaps/redundancies
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "C90", "B", "SIM"]
+ignore = ["E203", "W503"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = 3.10
+ignore_missing_imports = true
+strict = false
+warn_unused_ignores = true
+
