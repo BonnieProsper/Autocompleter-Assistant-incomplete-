@@ -1,3 +1,11 @@
+"""
+To run test locally:
+
+# from repo root
+python -m pip install -U pytest
+pytest -q
+"""
+
 # tests/test_hybrid_predictor_v3.py
 import types
 from intelligent_autocompleter.core.hybrid_predictor import HybridPredictor
