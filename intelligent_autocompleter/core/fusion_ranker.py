@@ -3,7 +3,7 @@
 
 # intelligent_autocompleter/core/fusion_ranker.py
 """
-FusionRanker - multi-signal ranker
+FusionRanker - multi-signal ranker with fast normalized hot path
 
 Design goals:
  - Per-feature normalization (via FeaturePreprocessor when available). - - remove?? e.g _minmax, log1pminmax, safesoftmax
@@ -13,132 +13,162 @@ Design goals:
  - Clean, testable public API.
 
 Includes:
- - rank_normalized(): fast path that accepts per-feature normalized maps (word -> [0,1]).
- - rank(): compatibility wrapper that accepts raw/unnormalized inputs and normalizes them.
+ - rank_normalized(): fast path that accepts per-feature normalized maps (word -> [0,1]), 
+   preferred hot-path: accepts normalized per-word feature dicts
+ - rank(): compatibility wrapper that accepts raw/unnormalized inputs and normalizes them, 
+   backward compatible list based API
  - deterministic tie-breaking and stable ordering for unit tests.
  - optional NumPy acceleration for heavy normalization functions, but hot path (rank_normalized)
-   avoids allocations by operating on dicts and weights.
+   avoids allocations by operating on dicts and weights. Uses NumPy if present for vectorized computation on large candidate sets.
+ - FusionRanker.debug_contributions(word, normalized_map, weights) -> per-feature contributions
+
+Design notes:
+ - Normalization responsibilities can be delegated to FeaturePreprocessor.
+ - Uses NumPy if present for vectorized computation on large candidate sets.
+ - Keeps numeric stability and deterministic ordering (sorted keys) for reproducibility.
 """
 
 from __future__ import annotations
-from typing import Dict, List, Tuple, Optional, Sequence, Mapping, Iterable
+
+from typing import Dict, Iterable, List, Tuple, Optional, Protocol
+from collections import defaultdict
 import math
 import logging
 
 logger = logging.getLogger(__name__)
 
-# optional numpy
+# Optional numpy acceleration
 try:
     import numpy as np  # type: ignore
-    NUMPY = True
+    NUMPY_AVAILABLE = True
 except Exception:
-    NUMPY = False
+    NUMPY_AVAILABLE = False
 
+# Types
 Candidate = Tuple[str, float]
+CandidateList = List[Candidate]
+FuzzyList = List[Tuple[str, int]]
+FeatureMap = Dict[str, float]      # word -> normalized value
+NormalizedPerWord = Dict[str, Dict[str, float]]  # word -> {feature: normalized_value}
+Weights = Dict[str, float]         # feature name -> weight (not necessarily normalized)
 
-# sensible presets
-_PRESETS = {
+
+# Protocols (for static typing of pluggable components)
+class PersonalizerProtocol(Protocol):
+    def bias_words(self, ranked: CandidateList) -> CandidateList:
+        ...
+
+
+# Preset weight profiles
+_PRESETS: Dict[str, Weights] = {
     "strict":   {"markov": 0.6, "embed": 0.1, "fuzzy": 0.05, "freq": 0.2, "personal": 0.05, "recency": 0.0},
     "balanced": {"markov": 0.4, "embed": 0.3, "fuzzy": 0.1,  "freq": 0.15, "personal": 0.05, "recency": 0.0},
     "creative": {"markov": 0.2, "embed": 0.6, "fuzzy": 0.05, "freq": 0.05, "personal": 0.1, "recency": 0.0},
     "personal": {"markov": 0.25,"embed": 0.25,"fuzzy": 0.05, "freq": 0.1, "personal": 0.35, "recency": 0.0},
 }
 
-EPS = 1e-12
+
+def _safe_normalize_weights(weights: Optional[Weights], preset: str = "balanced") -> Weights:
+    base = dict(_PRESETS.get(preset, _PRESETS["balanced"]))
+    if weights:
+        base.update(weights)
+    s = sum(base.values()) or 1.0
+    return {k: float(v) / s for k, v in base.items()}
 
 
 class FusionRanker:
     """
-    FusionRanker merges multiple normalized signals into a final score.
+    Combine multiple normalized features per-candidate into a single ranking.
 
-    Usage:
-        fr = FusionRanker(preset="balanced")
-        ranked = fr.rank_normalized(markov_norm, embed_norm, fuzzy_distances_norm, freq_norm, recency_norm, topn)
+    Two recommended entrypoints:
+      - rank_normalized(normalized_map, weights=, personalizer=, topn=)
+      - rank(markov=[(w,c)], embeddings=[(w,score)], fuzzy=[(w,dist)], base_freq={}, recency_map={}, topn=)
 
-    Backwards compatible:
-        ranked = fr.rank(markov=[(w,c)...], embeddings=[(w,score)...], fuzzy=[(w,dist)...], base_freq={w:count}, recency_map={w:ts})
+    The normalized API avoids re-normalizing on the hot-path and is preferred for performance.
     """
 
-    def __init__(self, preset: str = "balanced", weights: Optional[Dict[str, float]] = None, personalizer: Optional[object] = None):
-        base = dict(_PRESETS.get(preset, _PRESETS["balanced"]))
-        if weights:
-            base.update(weights)
-        s = sum(base.values()) or 1.0
-        # normalized weights that sum to 1
-        self.weights = {k: float(v) / s for k, v in base.items()}
+    def __init__(self,
+                 preset: str = "balanced",
+                 weights: Optional[Weights] = None,
+                 personalizer: Optional[PersonalizerProtocol] = None):
+        self.weights = _safe_normalize_weights(weights or None, preset)
         self.personalizer = personalizer
 
-    # Fast path: operate on normalized signals (values in [0,1])
-    # ------------------------------------------------------------
+    # ---------------------------------
+    # Hot-path: rank normalized maps
+    # ----------------------------------
     def rank_normalized(self,
-                        markov_norm: Mapping[str, float],
-                        embed_norm: Mapping[str, float],
-                        fuzzy_norm: Mapping[str, float],
-                        freq_norm: Mapping[str, float],
-                        recency_norm: Mapping[str, float],
-                        topn: int = 8) -> List[Candidate]:
+                        normalized: NormalizedPerWord,
+                        weights: Optional[Weights] = None,
+                        personalizer: Optional[PersonalizerProtocol] = None,
+                        topn: int = 8) -> CandidateList:
         """
-        Accept normalized per feature dictionaries and return topn ranked candidates.
-        Deterministic ordering: sort by (-score, token) to break ties lexicographically.
-        """
+        Rank using pre-normalized feature values.
 
-        # union keys
-        keys = set(markov_norm.keys()) | set(embed_norm.keys()) | set(fuzzy_norm.keys()) | set(freq_norm.keys()) | set(recency_norm.keys())
-        if not keys:
+        normalized: dict[word] -> dict[feature_name] -> normalized_value in [0,1]
+        weights: optional weights mapping (feature -> weight). If omitted uses self.weights.
+        personalizer: optional object to post-process ranked list.
+        """
+        if not normalized:
             return []
 
-        # compute weighted sum per key
-        w_markov = self.weights.get("markov", 0.0)
-        w_embed = self.weights.get("embed", 0.0)
-        w_fuzzy = self.weights.get("fuzzy", 0.0)
-        w_freq = self.weights.get("freq", 0.0)
-        w_recency = self.weights.get("recency", 0.0)
+        weights = _safe_normalize_weights(weights or self.weights, "balanced")
+        personalizer = personalizer or self.personalizer
 
-        scores: List[Tuple[str, float]] = []
-        append = scores.append
-        for k in keys:
-            s = 0.0
-            s += w_markov * float(markov_norm.get(k, 0.0))
-            s += w_embed * float(embed_norm.get(k, 0.0))
-            s += w_fuzzy * float(fuzzy_norm.get(k, 0.0))
-            s += w_freq * float(freq_norm.get(k, 0.0))
-            s += w_recency * float(recency_norm.get(k, 0.0))
-            append((k, float(s)))
+        # Deterministic sorted order of candidates
+        words = sorted(normalized.keys())
 
-        # deterministic sort by score desc, then token asc
-        scores.sort(key=lambda kv: (-kv[1], kv[0]))
+        # Extract per-feature arrays in deterministic ordering
+        # Determine feature set of interest from weights keys
+        feature_keys = list(weights.keys())
 
-        # allow personalizer to postprocess (e.g boost words etc)
-        ranked: List[Candidate] = scores
-        if self.personalizer:
+        # Build feature arrays
+        if NUMPY_AVAILABLE and len(words) > 16:
+            # Vectorized path
+            mat = []
+            for feat in feature_keys:
+                arr = [float(normalized[w].get(feat, 0.0)) for w in words]
+                mat.append(arr)
+            A = np.array(mat, dtype=float)  # shape: (n_features, n_words)
+            w = np.array([weights.get(f, 0.0) for f in feature_keys], dtype=float)[:, None]  # (n_features,1)
+            scores = (w * A).sum(axis=0)  # (n_words,)
+            scores_list = scores.tolist()
+        else:
+            # python loop path
+            scores_list = []
+            for w_idx, w in enumerate(words):
+                s = 0.0
+                row = normalized[w]
+                for feat in feature_keys:
+                    s += weights.get(feat, 0.0) * float(row.get(feat, 0.0))
+                scores_list.append(s)
+
+        scored = list(zip(words, scores_list))
+        scored.sort(key=lambda kv: (-kv[1], kv[0]))  # deterministic: score desc, then word asc
+
+        # Personalizer post-processing (if present)
+        if personalizer:
             try:
-                ranked = self.personalizer.bias_words(ranked)
+                scored = personalizer.bias_words(scored)
             except Exception as e:
-                logger.debug("personalizer failed: %s", e)
+                logger.debug("personalizer failed during rank_normalized: %s", e)
 
-        # return topn rounded
-        out = [(w, round(float(sc), 6)) for w, sc in ranked[:topn]]
-        return out
+        # Round numeric scores for stability
+        return [(w, round(float(sc), 6)) for w, sc in scored[:topn]]
 
-    # -------------------------
-    # Backwards-compatible API
-    # -------------------------
+    # ---------------------------
+    # Compatibility: list-based API (keeps previous behavior)
+    # -----------------------------------
     def rank(self,
              markov: Optional[List[Tuple[str, float]]] = None,
              embeddings: Optional[List[Tuple[str, float]]] = None,
-             fuzzy: Optional[List[Tuple[str, int]]] = None,
-             base_freq: Optional[Mapping[str, float]] = None,
-             recency_map: Optional[Mapping[str, float]] = None,
-             topn: int = 8) -> List[Candidate]:
+             fuzzy: Optional[FuzzyList] = None,
+             base_freq: Optional[Dict[str, float]] = None,
+             recency_map: Optional[Dict[str, float]] = None,
+             topn: int = 8) -> CandidateList:
         """
-        Compatibility wrapper that normalizes incoming raw signals then calls rank_normalized.
-
-        Normalization strategies:
-          - markov: log1p -> minmax
-          - embeddings: minmax
-          - fuzzy: distance -> similarity 1/(1+dist) -> minmax
-          - base_freq: log1p -> minmax
-          - recency_map: timestamp -> recency score 1/(1+log1p(age)) -> minmax
+        Backwards compatible API: accepts lists/maps and performs normalization internally.
+        This is slower than rank_normalized for repeated calls with same candidate sets.
         """
         markov = markov or []
         embeddings = embeddings or []
@@ -146,61 +176,78 @@ class FusionRanker:
         base_freq = base_freq or {}
         recency_map = recency_map or {}
 
-        # deterministic key order
-        cand_set = set([w for w, _ in markov] + [w for w, _ in embeddings] + [w for w, _ in fuzzy] + list(base_freq.keys()) + list(recency_map.keys()))
-        if not cand_set:
+        # Collect candidates in deterministic order
+        cand = set([w for w, _ in markov] + [w for w, _ in embeddings] + list(base_freq.keys()))
+        if not cand:
             return []
+        words = sorted(cand)
 
-        keys = sorted(cand_set)
+        # Build raw maps
+        markov_map = {w: float(v) for w, v in markov}
+        embed_map = {w: float(v) for w, v in embeddings}
+        fuzzy_map = {w: int(d) for w, d in fuzzy}
+        freq_map = {w: float(base_freq.get(w, 0.0)) for w in words}
+        rec_map = {w: float(recency_map.get(w, 0.0)) for w in words}
 
-        # build arrays
-        m_vals = [float(dict(markov).get(k, 0.0)) for k in keys]
-        e_vals = [float(dict(embeddings).get(k, 0.0)) for k in keys]
-        f_raw = [float(next((d for (w, d) in fuzzy if w == k), 999.0)) for k in keys]
-        freq_vals = [float(base_freq.get(k, 0.0)) for k in keys]
-
-        # recency transform (newer = larger)
-        if recency_map:
-            newest = max(recency_map.values())
-            rec_vals = []
-            for k in keys:
-                if k in recency_map:
-                    age = max(0.0, newest - float(recency_map[k]))
-                    rec_vals.append(1.0 / (1.0 + math.log1p(age)))
-                else:
-                    rec_vals.append(0.0)
-        else:
-            rec_vals = [0.0] * len(keys)
-
-        # normalization helpers (use numpy if available)
-        def _minmax(vals: Sequence[float]) -> List[float]:
-            arr = list(vals)
-            if not arr:
-                return []
-            lo, hi = min(arr), max(arr)
-            if abs(hi - lo) < EPS:
-                return [1.0 for _ in arr]
+        # Basic normalization heuristics (log1p for counts, min-max for embeddings/fuzzy)
+        # For simplicity this method uses small helpers (kept inline for readability)
+        def _minmax(vals):
+            if not vals:
+                return {}
+            lo, hi = min(vals), max(vals)
+            if hi == lo:
+                return {i: 1.0 for i in range(len(vals))}
             rng = hi - lo
-            return [(v - lo) / rng for v in arr]
+            return {i: (vals[i] - lo) / rng for i in range(len(vals))}
 
-        def _log1p_minmax(vals: Sequence[float]) -> List[float]:
-            transformed = [math.log1p(max(0.0, float(v))) for v in vals]
-            return _minmax(transformed)
+        # Convert to per-word normalized dict
+        mvals = [markov_map.get(w, 0.0) for w in words]
+        evals = [embed_map.get(w, 0.0) for w in words]
+        fvals = [1.0 / (1.0 + float(fuzzy_map.get(w, 999))) for w in words]  # similarity-like
+        fqvals = [math.log1p(freq_map.get(w, 0.0)) for w in words]
+        # recency: newer better -> normalized age inverted
+        rec_raw = []
+        if rec_map:
+            newest = max(rec_map.values())
+            for w in words:
+                if w in rec_map:
+                    age = max(0.0, newest - rec_map[w])
+                    rec_raw.append(1.0 / (1.0 + math.log1p(age)))
+                else:
+                    rec_raw.append(0.0)
+        else:
+            rec_raw = [0.0 for _ in words]
 
-        m_norm = _log1p_minmax(m_vals)
-        e_norm = _minmax(e_vals)
-        f_sim = [1.0 / (1.0 + float(d)) if d is not None else 0.0 for d in f_raw]
-        f_norm = _minmax(f_sim)
-        freq_norm = _log1p_minmax(freq_vals)
-        rec_norm = _minmax(rec_vals)
+        m_norm = _minmax([math.log1p(v) for v in mvals])
+        e_norm = _minmax(evals)
+        f_norm = _minmax(fvals)
+        fq_norm = _minmax([v for v in fqvals])
+        r_norm = _minmax(rec_raw)
 
-        # build maps and call fast path
-        markov_map = {k: m_norm[i] for i, k in enumerate(keys)}
-        embed_map = {k: e_norm[i] for i, k in enumerate(keys)}
-        fuzzy_map = {k: int(f_raw[i]) if isinstance(f_raw[i], (int, float)) else 999 for i, k in enumerate(keys)}
-        # convert fuzzy distances back to similarities normalized to [0,1]
-        fuzzy_sim_map = {k: f_norm[i] for i, k in enumerate(keys)}
-        freq_map = {k: freq_norm[i] for i, k in enumerate(keys)}
-        recency_map_norm = {k: rec_norm[i] for i, k in enumerate(keys)}
+        normalized: NormalizedPerWord = {}
+        for idx, w in enumerate(words):
+            normalized[w] = {
+                "markov": float(m_norm.get(idx, 0.0)),
+                "embed": float(e_norm.get(idx, 0.0)),
+                "fuzzy": float(f_norm.get(idx, 0.0)),
+                "freq": float(fq_norm.get(idx, 0.0)),
+                "recency": float(r_norm.get(idx, 0.0)),
+            }
 
-        return self.rank_normalized(markov_map, embed_map, fuzzy_sim_map, freq_map, recency_map_norm, topn=topn)
+        return self.rank_normalized(normalized, topn=topn)
+
+    # -----------------------------
+    # Helpers: debug contributions
+    # ------------------------------
+    @staticmethod
+    def debug_contributions(word: str, normalized: NormalizedPerWord, weights: Weights) -> Dict[str, float]:
+        """
+        Return per-feature weighted contributions for a single word given a normalized map and weights.
+        Good for explainability/inspecting scores.
+        """
+        row = normalized.get(word, {})
+        s = {}
+        for feat, w in weights.items():
+            s[feat] = float(w) * float(row.get(feat, 0.0))
+        s["final"] = sum(s.values())
+        return s
