@@ -26,6 +26,29 @@ pip install -r requirements.txt
 ```
 ---
 
+## Quickstart (developer)
+
+Requirements: Poetry (v1.8+), Python 3.10
+
+```bash
+# clone
+git clone git@github.com:<BonnieProsper>/<Autocompleter-Assistant-incomplete->.git 
+cd <Autocompleter-Assistant-incomplete->
+
+# install
+poetry install
+
+# run tests
+poetry run pytest -q
+
+# lint
+poetry run ruff check .
+poetry run black .
+
+# run the small profiling harness
+poetry run python tools/profile_suggest.py
+```
+
 ## Running Tests
 
 Install dependencies:
