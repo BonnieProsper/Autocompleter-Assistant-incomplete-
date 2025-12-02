@@ -284,3 +284,85 @@ if __name__ == "__main__":  # simple sanity checks
     print("WORDS:", words)
     print("FEATS:", feats)
     print("MATRIX SAMPLE (first row):", mat[0] if mat else None)
+
+
+"""Include?:
+# intelligent_autocompleter/core/feature_preprocessor.py
+# comment
+FeaturePreprocessor - normalize and prepare feature maps for ranking.
+
+API:
+ - normalize_all(markov, embed, fuzzy, freq, recency) -> Dict[word -> Dict[feature->float]]
+# end comment
+from __future__ import annotations
+from typing import Dict, Iterable
+import math
+
+FEATURES = ("markov", "embed", "personal", "freq", "fuzzy", "recency")
+
+
+class FeaturePreprocessor:
+    def __init__(self):
+        # placeholder for future config (clip thresholds, scaling method)
+        self.clip_min = 0.0
+        self.clip_max = 1.0
+
+    def normalize_all(self,
+                      markov: Dict[str, float],
+                      embed: Dict[str, float],
+                      fuzzy: Dict[str, int],
+                      freq: Dict[str, float],
+                      recency: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+        # Build union of words
+        words = set(markov.keys()) | set(embed.keys()) | set(freq.keys()) | set(fuzzy.keys()) | set(recency.keys())
+        if not words:
+            return {}
+
+        # Convert fuzzy distances to a score (0..1): smaller distance -> larger score
+        fuzzy_scores = {}
+        for w, d in fuzzy.items():
+            try:
+                d = float(d)
+                # guard: distance 0 -> highest
+                fuzzy_scores[w] = 1.0 / (1.0 + d)
+            except Exception:
+                fuzzy_scores[w] = 0.0
+
+        # Prepare raw feature map
+        raw = {}
+        for w in words:
+            raw[w] = {
+                "markov": float(markov.get(w, 0.0)),
+                "embed": float(embed.get(w, 0.0)),
+                "personal": float(freq.get(w, 0.0)),  # personal uses freq map passed by caller (CtxPersonal)
+                "freq": float(freq.get(w, 0.0)),
+                "fuzzy": float(fuzzy_scores.get(w, 0.0)),
+                "recency": float(recency.get(w, 0.0))
+            }
+
+        # Min-max normalization per feature
+        mins = {f: float("inf") for f in FEATURES}
+        maxs = {f: float("-inf") for f in FEATURES}
+        for w, feats in raw.items():
+            for f in FEATURES:
+                v = feats.get(f, 0.0)
+                mins[f] = min(mins[f], v)
+                maxs[f] = max(maxs[f], v)
+
+        normalized = {}
+        for w, feats in raw.items():
+            normalized[w] = {}
+            for f in FEATURES:
+                lo, hi = mins[f], maxs[f]
+                v = float(feats.get(f, 0.0))
+                if hi - lo <= 1e-12:
+                    # degenerate range: map to 0 or scaled by hi
+                    normalized[w][f] = 0.0 if hi == 0.0 else v / hi
+                else:
+                    normalized[w][f] = (v - lo) / (hi - lo)
+                # clip for numerical safety
+                normalized[w][f] = max(self.clip_min, min(self.clip_max, normalized[w][f]))
+        return normalized
+
+
+"""
