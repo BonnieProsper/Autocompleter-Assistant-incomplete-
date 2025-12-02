@@ -1,4 +1,4 @@
-# intelligent_autocompleter/core/protocols.py
+# intelligent_autocompleter/core/protocols.py 
 
 from __future__ import annotations
 from typing import Protocol, Iterable, List, Tuple, Any, Optional, Dict, TypeAlias
