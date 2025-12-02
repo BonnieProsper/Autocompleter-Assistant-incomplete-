@@ -83,3 +83,10 @@ def test_rank_normalized_top_k(ranker):
     assert len(out) == 2
     assert out[0][0] == "a"
     assert out[1][0] == "b"
+
+def test_debug_contributions():
+    normalized = {"x": {"markov": 0.5, "embed": 0.5, "personal": 0.0, "freq": 0.0, "fuzzy": 0.0, "recency": 0.0}}
+    weights = {"markov": 0.4, "embed": 0.6, "personal": 0.0, "freq": 0.0, "fuzzy": 0.0, "recency": 0.0}
+    fr = FusionRanker(weights=weights)
+    c = fr.debug_contributions("x", normalized, weights)
+    assert pytest.approx(c["_score"], rel=1e-6) == 0.5*0.4 + 0.5*0.6
