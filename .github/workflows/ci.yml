@@ -9,11 +9,13 @@ on:
 jobs:
   test-and-lint:
     runs-on: ubuntu-latest
+
     strategy:
       matrix:
         python-version: ["3.10"]
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -21,46 +23,51 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # --- FIX: Install Poetry AND export it to PATH ---
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
-          version: "1.9.6"
-          use-poetry-executable: true
+          version: 1.9.6
+          virtualenvs-create: true
+          virtualenvs-in-project: true
 
-      - name: Configure Poetry Cache
+      # --- FIX: Load Poetry PATH ---
+      - name: Load Poetry environment
+        run: echo "${HOME}/.local/bin" >> $GITHUB_PATH
+
+      - name: Cache dependencies
         uses: actions/cache@v4
         with:
           path: |
+            .venv
             ~/.cache/pypoetry
             ~/.cache/pip
           key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
           restore-keys: |
             ${{ runner.os }}-poetry-
 
+      # Install dependencies
       - name: Install dependencies
         run: |
-          poetry config virtualenvs.create true
-          poetry install --no-interaction
+          poetry install --no-interaction --no-ansi
 
+      # Linting
       - name: Lint (ruff)
-        run: |
-          poetry run ruff check .
+        run: poetry run ruff check .
 
       - name: Format check (black)
-        run: |
-          poetry run black --check .
+        run: poetry run black --check .
 
       - name: Type-check (mypy)
-        run: |
-          poetry run mypy intelligent_autocompleter
+        run: poetry run mypy intelligent_autocompleter
 
+      # Tests
       - name: Run tests (pytest)
         env:
           PYTHONPATH: .
-        run: |
-          poetry run pytest -q --maxfail=1
+        run: poetry run pytest -q --maxfail=1
 
+      # Coverage
       - name: Coverage report
         if: always()
-        run: |
-          poetry run pytest --maxfail=1 --disable-warnings --quiet --cov=intelligent_autocompleter
+        run: poetry run pytest --cov=intelligent_autocompleter --disable-warnings
