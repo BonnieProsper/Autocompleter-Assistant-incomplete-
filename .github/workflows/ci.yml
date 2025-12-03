@@ -23,48 +23,32 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # --- FIX: Install Poetry using official installer ---
-      - name: Install Poetry (official)
+      - name: Install Poetry
         run: |
           curl -sSL https://install.python-poetry.org | python3 -
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Verify Poetry Installation
+      - name: Verify Poetry
         run: poetry --version
 
-      # Cache for speed
-      - name: Cache virtual environment
+      - name: Cache Poetry venv
         uses: actions/cache@v4
         with:
-          path: |
-            .venv
-            ~/.cache/pip
-            ~/.cache/pypoetry
-          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-          restore-keys: poetry-${{ runner.os }}-
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: venv-${{ runner.os }}-
 
-      # Install dependencies
-      - name: Install Dependencies
-        run: |
-          poetry install --no-interaction --no-ansi
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi
 
-      # Linting
       - name: Lint with ruff
         run: poetry run ruff check .
 
       - name: Format check with black
         run: poetry run black --check .
 
-      - name: Type-check with mypy
+      - name: Type check with mypy
         run: poetry run mypy intelligent_autocompleter
 
-      # Tests
       - name: Run tests
-        run: poetry run pytest -q --maxfail=1
-        env:
-          PYTHONPATH: .
-
-      # Coverage report
-      - name: Coverage
         run: poetry run pytest --cov=intelligent_autocompleter --disable-warnings
-        if: always()
