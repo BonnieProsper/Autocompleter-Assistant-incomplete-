@@ -1,20 +1,19 @@
 # intelligent_autocompleter/core/protocols.py
 """
-Protocol interfaces for the core components of the Intelligent Autocompleter.
+Typed Protocol interfaces for the core components of the Intelligent Autocompleter.
 
-These Protocols are intentionally small and focused: they describe the methods the core
-HybridPredictor/FusionRanker/tests rely on. Chose to depend on Protocols rather than concrete
-implementations for better testability and modularity.
-Keep this file stable.
+Small, stable Protocols and typed helpers used across core modules
+(HybridPredictor, FusionRanker, ReinforcementLearner, CtxPersonal, plugins, and tests).
+
+Import-safe and usable on Python 3.10 without typing_extensions.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, Iterable, List, Tuple, Dict, Any, Optional, runtime_checkable
-from typing_extensions import TypedDict
+from typing import Protocol, Iterable, List, Tuple, Dict, Any, Optional, runtime_checkable, TypedDict
 
 
-# Typed structures used across components ------------------------------------
+# --- Typed structures used across components ------------------------------------
 
 class NormalizedFeatureMap(TypedDict, total=False):
     """
@@ -39,6 +38,7 @@ NormalizedMaps = Dict[str, NormalizedFeatureMap]  # mapping: token -> per-featur
 
 # Protocols ------------------------------------------------------------------
 
+@runtime_checkable
 class MarkovProtocol(Protocol):
     """Minimal interface for Markov predictor used by HybridPredictor."""
 
@@ -52,6 +52,7 @@ class MarkovProtocol(Protocol):
         ...
 
 
+@runtime_checkable
 class BKTreeProtocol(Protocol):
     """Interface for a BK-Tree used to provide fuzzy matches."""
 
@@ -65,6 +66,7 @@ class BKTreeProtocol(Protocol):
         ...
 
 
+@runtime_checkable
 class SemanticEngineProtocol(Protocol):
     """
     Interface for embedding/semantic search.
@@ -86,6 +88,7 @@ class SemanticEngineProtocol(Protocol):
         ...
 
 
+@runtime_checkable
 class FeaturePreprocessorProtocol(Protocol):
     """Normalizes raw feature maps into normalized per-word feature dicts."""
 
@@ -103,6 +106,7 @@ class FeaturePreprocessorProtocol(Protocol):
         ...
 
 
+@runtime_checkable
 class ReinforcementProtocol(Protocol):
     """Interface for the reinforcement/feedback component."""
 
@@ -124,6 +128,7 @@ class ReinforcementProtocol(Protocol):
         ...
 
 
+@runtime_checkable
 class PersonalizerProtocol(Protocol):
     """
     Personalization interface (e.g. CtxPersonal). Two shapes are supported:
@@ -137,8 +142,9 @@ class PersonalizerProtocol(Protocol):
 
     def adjust_map(self, m: Dict[str, float], source: str) -> Dict[str, float]:
         ...
-    
 
+
+@runtime_checkable
 class FusionRankerProtocol(Protocol):
     """
     Required FusionRanker API used by HybridPredictor and tests.
@@ -175,6 +181,7 @@ class FusionRankerProtocol(Protocol):
         ...
 
 
+@runtime_checkable
 class PluginRegistryProtocol(Protocol):
     """Plugin registry hooks used by HybridPredictor and the CLI/TUI."""
 
@@ -195,15 +202,3 @@ class PluginRegistryProtocol(Protocol):
 
     def call_reject(self, w: str, meta: Dict[str, Any]) -> None:
         ...
-
-
-# runtime-checkable variants 
-# let you do runtime isinstance(protocol_instance, SomeProtocol) checks if you want
-runtime_checkable(MarkovProtocol)
-runtime_checkable(BKTreeProtocol)
-runtime_checkable(SemanticEngineProtocol)
-runtime_checkable(FeaturePreprocessorProtocol)
-runtime_checkable(ReinforcementProtocol)
-runtime_checkable(PersonalizerProtocol)
-runtime_checkable(FusionRankerProtocol)
-runtime_checkable(PluginRegistryProtocol)
