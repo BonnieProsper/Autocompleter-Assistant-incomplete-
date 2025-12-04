@@ -10,7 +10,7 @@ Prints mean/median/std latency and basic sample of suggestions.
 """
 import argparse
 import time
-import statistics import median
+from statistics import median
 from pathlib import Path
 
 try:
