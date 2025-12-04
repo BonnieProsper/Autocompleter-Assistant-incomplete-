@@ -1,6 +1,9 @@
 # basic_test.py -  sanity tests for hybrid_predictor file, to test prediction code 
 
-import sys, os, time
+import sys
+import os
+import time
+
 # add root to import path so we can improt local modules directly
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
