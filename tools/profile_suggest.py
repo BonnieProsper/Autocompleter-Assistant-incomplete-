@@ -1,6 +1,6 @@
 # check: put in different folder e.g tools?
 
-# utils/profile_suggest.py
+# tools/profile_suggest.py
 """
 Small profiling harness for HybridPredictor.suggest.
 Usage:
