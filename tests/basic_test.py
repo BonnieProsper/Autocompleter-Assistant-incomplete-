@@ -29,8 +29,8 @@ def test_balance_switch():
     print("alpha works:", hp.alpha)
 
 if __name__ == "__main__":
-    start = time.time() # start time
+    t0 = time.time()
     test_train_and_suggest()
     test_balance_switch()
-    print(f"Basic tests completed in {round(time.time()-t0,3)} seconds.")
+    print(f"Basic tests completed in {round(time.time() - t0, 3)} seconds.")
 
