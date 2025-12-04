@@ -24,7 +24,7 @@ mypy = "^1.5"
 ruff = "^0.6.9"
 black = "^24.3"
 isort = "^5.12"
-pre-commit = "^4.5"
+pre-commit = "^4.5" 
 coverage = "^7.3"
 tox = "^4.12"
 
