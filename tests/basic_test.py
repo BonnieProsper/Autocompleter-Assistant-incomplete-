@@ -33,7 +33,7 @@ def test_balance_switch():
 
 if __name__ == "__main__":
     t0 = time.time()
-    test_train_and_suggest()
+    test_train_suggest()
     test_balance_switch()
     print(f"Basic tests completed in {round(time.time() - t0, 3)} seconds.")
 
