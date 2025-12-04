@@ -224,7 +224,7 @@ class TUIAutocompleter(App):
 
     # Startup hook ---------------------------------------------------------------------
     def on_mount(self):
-      """Once UI is ready update context panel with loaded state."""
+        """Once UI is ready update context panel with loaded state."""
         self.query_one(ContextView).update_context(self.context)
 
 
