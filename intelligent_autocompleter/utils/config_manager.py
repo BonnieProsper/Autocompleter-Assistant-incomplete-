@@ -1,6 +1,7 @@
 # config_manager.py - JSON config manager
 
-import json, os
+import json
+import os
 
 class Config:
     def __init__(self, path="config.json"):
