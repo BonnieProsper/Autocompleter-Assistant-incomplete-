@@ -1,5 +1,4 @@
-# tests/test_fusion_ranker.py
-# unit tests for rank_noramlized in FusionRanker
+# tests/test_fusion_ranker.py - unit tests for rank_normalized in FusionRanker
 
 import pytest
 from fusion_ranker import FusionRanker
