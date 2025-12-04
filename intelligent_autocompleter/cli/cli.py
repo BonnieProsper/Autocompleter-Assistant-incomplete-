@@ -145,13 +145,13 @@ class CLI:
         console.print(f"[red]Unknown command:[/red] {cmd}")
 
     # CORE INPUT PROCESSING ---------------------------------------------------------------
-    def _process_input(self, fragmentment: str):
+    def _process_input(self, fragment: str):
         """
         Loop:
         Prediction → display → user choice → apply → adaptive learning → feedback tracking
         """
         t0 = time.perf_counter()
-        suggestions = self.hp.suggest(fragmentment) # get suggestions from HybridPredictor
+        suggestions = self.hp.suggest(fragment) # get suggestions from HybridPredictor
         self.metrics.record("suggest_time", time.perf_counter() - t0) # record time for stats
 
         tokens = [t for t in fragment.strip().split() if t]
@@ -178,7 +178,7 @@ class CLI:
             self.learner.update(word)
             self.feedback.push("accepted", {"word": word, "src": source})
 
-            self.session_data.append({"input": fragmentment, "accepted": word})
+            self.session_data.append({"input": fragment, "accepted": word})
             self._autosave()
             return
 
@@ -190,7 +190,7 @@ class CLI:
         self.feedback.push("custom", {"word": word})
 
         console.print(f"[cyan]Added custom:[/cyan] {word}")
-        self.session_data.append({"input": fragmentment, "custom": word})
+        self.session_data.append({"input": fragment, "custom": word})
         self._autosave()
 
     # DISPLAY -------------------------------------------------------------------------------
