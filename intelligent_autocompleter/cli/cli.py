@@ -24,8 +24,7 @@ from rich.prompt import Prompt
 from rich import box
 
 from intelligent_autocompleter.core.hybrid_predictor import HybridPredictor
-from intelligent_autocompleter.core.adaptive_learner import AdaptiveLearner
-from intelligent_autocompleter.core.feedback_tracker import FeedbackTracker
+from intelligent_autocompleter.core.reinforcement_learner import ReinforcementLearner
 from intelligent_autocompleter.core.plugin_registry import PluginRegistry
 from intelligent_autocompleter.utils.logger_utils import Log
 from intelligent_autocompleter.utils.metrics_tracker import Metrics
