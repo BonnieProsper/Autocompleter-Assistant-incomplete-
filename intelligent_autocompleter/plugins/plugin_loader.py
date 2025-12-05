@@ -14,7 +14,7 @@ import os
 import importlib.util
 import sys
 import traceback 
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from .registry import PluginRegistry
 from .base import PluginBase
 
