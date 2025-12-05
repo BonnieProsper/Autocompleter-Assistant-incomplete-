@@ -2,6 +2,8 @@
 from ..base import PluginBase
 from typing import List, Dict, Any
 
+Candidate = Tuple[str, float]
+
 class CodeAssist(PluginBase):
     """
     CodeAssist plugin has a predefined set of code pieces to assist the user
