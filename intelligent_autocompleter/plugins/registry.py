@@ -121,40 +121,34 @@ class PluginRegistry:
         bundle = bundle or {}
 
         # current pipeline state (normalized to (w,score))
-        cur: List[Tuple[str, float]] = [(w, float(s)) for w, s in suggestions]
+        cur: List[Candidate] = [(w, float(s)) for w, s in suggestions]
 
         for name, entry in self._plugins.items():
             if not entry.enabled:
                 continue
             try:
-                out = entry.inst.on_suggest(fragment, cur, bundle)
+                new = entry.inst.on_suggest(fragment, cur, bundle)
             except Exception as e:
                 Log.write(f"[Plugin:{name}] on_suggest error: {e}")
                 continue  # keep pipeline alive
-            if out is None:
+            if new is None:
                 # plugin didn't modify anything
                 continue
 
             # Normalize returned items
-            normalized = []
-            for item in out:
-                if not isinstance(item, (tuple, list)) or len(item) < 2:
-                    continue
-                w = item[0]
-                sc = float(item[1])
-                src = item[2] if len(item) >= 3 else name
-                normalized.append((w, sc, src))
+            normalized: List[Tuple[str, float]] = []
+            for item in new:
+                if isinstance(item, tuple):
+                    if len(item) == 2:
+                        normalized.append((item[0], float(item[1])))
+                    elif len(item) == 3:
+                        normalized.append((item[0], float(item[1])))
+                # ignore invalid items
 
-            # update pipeline state for next plugin
-            if normalized:
-                cur = [(w, sc) for w, sc, _ in normalized]
+            cur = normalized or cur
 
-        # final output: reattach inferred source="fusion"
-        final = []
-        for w, sc in cur:
-            final.append((w, sc, "fusion"))
-
-        return final
+        # Add plugin source tag needed by HybridPredictor
+        return [(w, s, "plugin") for (w, s) in cur]
 
     # Config ----------------------------------------------------------
     def apply_config(self, cfg: Dict[str, Any]):
