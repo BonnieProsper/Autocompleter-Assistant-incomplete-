@@ -34,5 +34,5 @@ class CodeAssist(PluginBase):
         return out
 
     def register(reg):
+        """Correct plugin loader entrypoint."""
         reg.register(CodeAssist())
-
