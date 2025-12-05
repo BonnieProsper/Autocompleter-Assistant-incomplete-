@@ -1,247 +1,386 @@
-# cli.py — Command Line Interface for Smart Text Assistant
-# Handles user interaction, commands, and integrates the hybrid prediction system.
+"""
+cli.py - command line interface assistant
+Features:
+- Live autocompletion with color-coded predictions using HybridPredictor for predictions
+- Adaptive learning, quiet feedback tracking and session persistence
+- Plugin registry for custom expansion
+- Real time optional weight readout
+- Uses Rich for tables and formatting
+"""
 
-import sys
-import shlex
-import time
 import os
-import pickle
+import sys
 import json
-from random import choice
+import time
+import pickle
+from typing import List, Tuple
 
-from hybrid_predictor import HybridPredictor
-from config_manager import Config
-from metrics_tracker import Metrics
-from logger_utils import Log
+# ui styling with Rich
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich.prompt import Prompt
+from rich import box
+
+from intelligent_autocompleter.core.hybrid_predictor import HybridPredictor
+from intelligent_autocompleter.core.reinforcement_learner import ReinforcementLearner
+from intelligent_autocompleter.core.plugin_registry import PluginRegistry
+from intelligent_autocompleter.utils.logger_utils import Log
+from intelligent_autocompleter.utils.metrics_tracker import Metrics
+from intelligent_autocompleter.utils.config_manager import Config
+from intelligent_autocompleter.core.context_personal import CtxPersonal
+
+""" check/include:
+from intelligent_autocompleter.core.reasoner import ReasonerPipeline
+from intelligent_autocompleter.core.semantic_engine import SemanticEngine
+
+sem = SemanticEngine()  # or pass None during tests
+pipeline = ReasonerPipeline(plugin_registry=None, semantic_engine=sem)
+
+res = pipeline.analyze_input("gti commit -m 'fix'")
+# res is a dict: res['corrections'], res['predictions'], res['semantic'], res['warnings'], ...
+for k, v in res.items():
+    print(k, v)
+"""
 
 
-# === Constants and paths ===
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DEFAULT_CORPUS = os.path.join(DATA_DIR, "demo_corpus.txt")
+# initialise console for rich output
+console = Console()
+
+# initialise file paths
+ROOT = os.path.dirname(__file__)
+DATA_DIR = os.path.join(ROOT, "data")
 MODEL_PATH = os.path.join(DATA_DIR, "model_state.pkl")
-
-BANNER = "Smart Text Assistant (type /help for commands)"
-
+SESSION_PATH = os.path.join(DATA_DIR, "session_state.json")
+PLUGIN_CONFIG = os.path.join(DATA_DIR, "plugins_config.json")
 
 class CLI:
+    """Command-line interface (CLI) class to manage user interaction, autocompletion, and session persistence."""
     def __init__(self):
-        # Initialize logging first, so all other subsystems can use it
-        log_path = os.path.join(DATA_DIR, "assistant.log")
-        self.log = Log(log_path)
-        self.log.info("=== Smart Text Assistant started ===")
-
-        # Initialize core modules
-        self.hp = HybridPredictor()
-        self.cfg = Config()
+        """
+        Initialize the CLI assistant:
+        - Loads the HybridPredictor model
+        - Sets up context (user-specific data) 
+        - Initializes metrics tracking
+        - Loads previous session data 
+        """
+        self.registry = PluginRegistry()
+        self.hp = HybridPredictor(registry=self.registry)
+        self.learner = ReinforcementLearner()
+        
+        self.context = CtxPersonal()
         self.metrics = Metrics()
+        self.cfg = Config()
+        
+        self.session_data = []
         self.running = True
-
-        # Load existing model if present
+        self.show_feedback_logs = False  # toggleable
+        os.makedirs(DATA_DIR, exist_ok=True)
         self._load_state()
+        self._load_plugin_config()
 
-    # === Main interactive loop ===
-    def start(self):
-        print(BANNER)
-        self.log.info("CLI session started.")
+    def run(self):
+        """
+        Main interactive loop of CLI:
+        - Prompts the user for input.
+        - Handles commands like /quit, /save.
+        - Processes user input with autocompletion suggestions.
+        """
+        console.rule("[bold magenta]Intelligent Autocompleter[/bold magenta]")
+        console.print("[cyan]Type sentences with live suggestions. Use #comment for notes.[/cyan]")
+        console.print("Commands: /quit /weights /plugins /context /feedback /reset\n")
+
+        # run loop as long as CLI is running
         while self.running:
             try:
-                line = input(">> ").strip()
+                # prompt user for input (suggestions shown as they type)
+                fragment = Prompt.ask("[green]You[/green]", default="")
+                if not fragment: # if no input continue to next iteration
+                    continue
+
+                # handle commands
+                if fragment.startswith("/"):
+                    self._handle_command(fragment)
+                    continue
+                # handle inline comments
+                if fragment.startswith("#"):
+                    self._add_comment(fragment)
+                    continue
+
+                self._process_input(fragment)
             except (EOFError, KeyboardInterrupt):
-                print("\nbye.")
-                self.log.info("Session ended by user.")
-                self._save_state()
+                self._exit()
                 break
 
-            if not line:
-                continue
-
-            if line.startswith("/"):
-                self.cmd(line)
-            else:
-                t0 = time.perf_counter()
-                self.hp.retrain(line)
-                dt = time.perf_counter() - t0
-                self.metrics.record("train_time", dt)
-                self.log.debug(f"Retrained with line '{line}' in {dt:.3f}s.")
-                print(f"Learnt: ({dt*1000:.1f} ms)")
-
-    # === Command processor ===
-    def cmd(self, line):
-        p = shlex.split(line)
-        if not p:
+    # COMMAND HANDLING -----------------------------------------------------------
+    def _handle_command(self, cmd: str):
+        """
+        Handles special slash commands.
+        """
+        if cmd.startswith("/quit"):
+            self._exit()
             return
-        cmd = p[0].lower()
 
-        match cmd:
-            case "/q" | "/quit" | "/exit":
-                self._save_state()
-                self.running = False
-                print("bye.")
-                self.log.info("Exited normally.")
-                return
+        if cmd == "/weights":
+            self._show_weights()
+            return
 
-            case "/help":
-                print("Commands:")
-                print("  /suggest <word>    : show predictions")
-                print("  /mode <name>       : set model mode")
-                print("  /train <file>      : train from file")
-                print("  /bal <value>       : adjust balance")
-                print("  /config [key val]  : view/set config")
-                print("  /stats             : show performance metrics")
-                print("  /bench             : benchmark suggestion speed")
-                print("  /export <file>     : export data summary")
-                print("  /quit              : exit program")
-                return
+        if cmd == "/plugins":
+            self._show_plugins()
+            return
 
-            case "/suggest" if len(p) > 1:
-                self._suggest(p[1])
-                return
+        if cmd == "/context":
+            self._show_context()
+            return
 
-            case "/train" if len(p) > 1:
-                self.train_file(p[1])
-                return
+        if cmd == "/feedback":
+            self._show_feedback_log()
+            return
 
-            case "/mode" if len(p) > 1:
-                self.set_mode(p[1])
-                print("mode:", p[1])
-                self.log.info(f"Mode changed to {p[1]}")
-                return
+        if cmd == "/reset":
+            self._reset_state()
+            return
 
-            case "/bal" if len(p) > 1:
-                try:
-                    val = float(p[1])
-                    self.hp.set_balance(val)
-                    self.cfg.data["balance"] = val
-                    self.cfg.save()
-                    print("balance=", self.hp.alpha)
-                    self.log.info(f"Balance set to {val}")
-                except ValueError:
-                    print("bad val")
-                    self.log.warning(f"Invalid balance value: {p[1]}")
-                return
+        console.print(f"[red]Unknown command:[/red] {cmd}")
 
-            case "/config":
-                self._config_cmd(p)
-                return
-
-            case "/stats":
-                self.metrics.show()
-                return
-
-            case "/bench":
-                self._bench()
-                return
-
-            case "/export" if len(p) > 1:
-                self.export_data(p[1])
-                return
-
-            case _:
-                print("unknown cmd")
-                self.log.warning(f"Unknown command: {cmd}")
-
-    # === Suggestion helper ===
-    def _suggest(self, word):
+    # CORE INPUT PROCESSING ---------------------------------------------------------------
+    def _process_input(self, fragment: str):
+        """
+        Loop:
+        Prediction → display → user choice → apply → adaptive learning → feedback tracking
+        """
         t0 = time.perf_counter()
-        out = self.hp.suggest(word)
-        dt = time.perf_counter() - t0
-        self.metrics.record("suggest_time", dt)
+        suggestions = self.hp.suggest(fragment) # get suggestions from HybridPredictor
+        self.metrics.record("suggest_time", time.perf_counter() - t0) # record time for stats
 
-        if out:
-            for s, sc in out:
-                print(f"{s}\t{sc:.3f}")
-        else:
-            print("(no suggestion)")
-        self.log.debug(f"Suggested for '{word}' in {dt:.3f}s ({len(out) if out else 0} results).")
+        tokens = [t for t in fragment.strip().split() if t]
+        if tokens:
+            self.hp._learner.add_token(tokens[-1])
+            
+        if not suggestions:
+            console.print("[dim](no suggestions)[/dim]")
+            return
 
-    # === Config helper ===
-    def _config_cmd(self, p):
-        if len(p) == 1:
-            self.cfg.show()
-        elif len(p) == 3:
-            self.cfg.set(p[1], p[2])
-            self.log.info(f"Config updated: {p[1]}={p[2]}")
-        else:
-            print("usage: /config [key val]")
+        self._display_suggestions(suggestions)
+        # prompt user to select suggestion/custom word
+        chosen = Prompt.ask("Pick # / override / Enter to skip", default="")
+        if not chosen:
+            return
 
-    # === File-based training ===
-    def train_file(self, path):
-        try:
-            with open(path, "r", encoding="utf8") as f:
-                lines = [ln.strip() for ln in f if ln.strip()]
-            t0 = time.perf_counter()
-            self.hp.train(lines)
-            dt = time.perf_counter() - t0
-            self.metrics.record("train_file_time", dt)
-            print(f"trained on {len(lines)} lines in {dt:.2f}s")
-            self._save_state()
-            self.log.info(f"Trained from file {path} ({len(lines)} lines, {dt:.2f}s).")
-        except Exception as e:
-            print("Error:", e)
-            self.log.error(f"Failed to train from {path}: {e}")
+        # accept suggestion using corresponding number
+        if chosen.isdigit() and 1 <= int(chosen) <= len(suggestions):
+            word, score, source = suggestions[int(chosen)-1]
+            console.print(f"[green]Accepted:[/green] {word}  [dim]({source})[/dim]")
 
-    # === Benchmark ===
-    def _bench(self):
-        words = ["the", "hello", "world", "this", "that", "there", "good"]
-        t0 = time.perf_counter()
-        for _ in range(100):
-            self.hp.suggest(choice(words))
-        dt = time.perf_counter() - t0
-        avg = dt / 100
-        print(f"bench: {avg:.5f}s avg per suggest")
-        self.log.info(f"Benchmark completed: {avg:.5f}s avg")
+            self.hp.accept(word)
+            self.context.learn(word)
+            self.learner.update(word)
+            self.feedback.push("accepted", {"word": word, "src": source})
 
-    # === Data export ===
-    def export_data(self, path):
-        data = {
-            "config": self.cfg.data,
-            "metrics": {k: self.metrics.avg(k) for k in self.metrics.m},
-        }
-        try:
-            with open(path, "w", encoding="utf8") as f:
-                json.dump(data, f, indent=2)
-            print("exported to", path)
-            self.log.info(f"Exported summary to {path}")
-        except Exception as e:
-            print("export error:", e)
-            self.log.error(f"Export failed: {e}")
+            self.session_data.append({"input": fragment, "accepted": word})
+            self._autosave()
+            return
 
-    # === State management ===
-    def _save_state(self):
+        # custom word
+        word = chosen.strip()
+        self.hp.retrain(word)
+        self.context.learn(word)
+        self.learner.update(word)
+        self.feedback.push("custom", {"word": word})
+
+        console.print(f"[cyan]Added custom:[/cyan] {word}")
+        self.session_data.append({"input": fragment, "custom": word})
+        self._autosave()
+
+    # DISPLAY -------------------------------------------------------------------------------
+    def _display_suggestions(self, suggestions: List[Tuple[str, float, str]]):
+        """
+        Display the autocompletion suggestions in a color-coded table.
+        Each suggestion is ranked and color-coded based on its relevance, includes source.
+        """
+        table = Table(title="Predictions", box=box.SIMPLE, show_edge=False)
+        table.add_column("#", justify="right", style="cyan")
+        table.add_column("Word", style="bold")
+        table.add_column("Score", justify="right", style="magenta")
+        table.add_column("Source", justify="left", style="dim")
+
+        for i, (w, score, src) in enumerate(suggestions[:5], 1):
+            style = self._color_for_word(w)
+            table.add_row(
+                str(i),
+                Text(w, style=style),
+                f"{score:.3f}",
+                src
+            )
+        console.print(table)
+
+    def _color_for_word(self, word: str) -> str:
+        """
+        Assign a color to each word based on semantic categories.
+        - Green for personal vocabulary (frequent words)
+        - Cyan for short words, contextual
+        - Magenta for title-case words (names etc, semantic)
+        - Yellow as the fallback color (or mixed)
+        """
+        if word in self.context.freq:
+            return "green"
+        if len(word) <= 4:
+            return "cyan"
+        if word.istitle():
+            return "magenta"
+        return "yellow"
+
+    # COMMENTS --------------------------------------------------------------
+    def _add_comment(self, comment: str):
+        """
+        Handle comments entered by the user, for interactive note taking.
+        Prints the comment in the console and adds it to session data.
+        """
+        note = comment.lstrip("#").strip()
+        console.print(f"[dim italic]Comment:[/dim italic] {note}")
+        self.session_data.append({"comment": note})
+        self._autosave()
+
+
+    # COMMAND: WEIGHTS/PLUGINS/CONTEXT/FEEDBACK --------------------------------------
+    def _show_weights(self):
+        panel = Panel(
+            json.dumps(self.hp.get_weights(), indent=2),
+            title="Current Weights",
+            border_style="cyan"
+        )
+        console.print(panel)
+
+        """or try:
+            weights = self.hp.get_weights()
+        except Exception:
+            weights = {}
+        panel = Panel.fit("\n".join([f"{k}: {v:.3f}" for k, v in weights.items()]), title="Live Weights", subtitle="ReinforcementLearner")
+        console.print(panel)"""
+
+    def _show_plugins(self):
+        rows = []
+        for name, obj in self.registry.plugins.items():
+            enabled = "yes" if obj.enabled else "no"
+            rows.append((name, enabled, obj.__class__.__name__))
+        table = Table(title="Loaded Plugins", box=box.SIMPLE)
+        table.add_column("Name")
+        table.add_column("Enabled")
+        table.add_column("Class")
+        for r in rows:
+            table.add_row(*r)
+
+        console.print(table)
+
+    def _show_context(self):
+        freq_sorted = sorted(self.context.freq.items(), key=lambda kv: kv[1], reverse=True)
+        table = Table(title="Personal Vocabulary", box=box.MINIMAL)
+        table.add_column("Word")
+        table.add_column("Freq")
+
+        for w, c in freq_sorted[:20]:
+            table.add_row(w, str(c))
+
+        console.print(table)
+
+    def _show_feedback_log(self):
+        logs = self.feedback.dump()
+        panel = Panel(
+            json.dumps(logs, indent=2),
+            title="Feedback Log",
+            border_style="yellow"
+        )
+        console.print(panel)
+
+    # STATE/SAVING/LOADING ----------------------------------------------------------
+    def _autosave(self):
+        """Automatically save session data every 5 entries."""
+        if len(self.session_data) % 5 == 0:
+            self._save_state(quiet=True)
+
+    def _save_state(self, quiet=False):
+        """
+        Save the current model state and session data to disk.
+        - Model state is saved with pickle.
+        - Session state is saved as a JSON file.
+        """
+        os.makedirs(DATA_DIR, exist_ok=True)
         try:
             with open(MODEL_PATH, "wb") as f:
                 pickle.dump(self.hp, f)
-            print("[saved model state]")
-            self.log.info("Model state saved successfully.")
+            with open(SESSION_PATH, "w", encoding="utf8") as f:
+                json.dump(self.session_data, f, indent=2)
+            if not quiet:
+                console.print("[green]State saved.[/green]")
         except Exception as e:
-            print("[warn] could not save model:", e)
-            self.log.error(f"Model save failed: {e}")
+            Log.write(f"[ERROR] Save: {e}")
+            if not quiet:
+                console.print(f"[red]Save failed:[/red] {e}")
 
     def _load_state(self):
+        """
+        Load the saved model and session state from disk.
+        If no state exists then skip loading.
+        """
         if os.path.exists(MODEL_PATH):
             try:
                 with open(MODEL_PATH, "rb") as f:
                     self.hp = pickle.load(f)
-                print(f"[loaded existing model: {MODEL_PATH}]")
-                self.log.info("Model loaded successfully.")
+                console.print("[dim]Model loaded.[/dim]")
             except Exception as e:
-                print("[warn] could not load model:", e)
-                self.log.error(f"Model load failed: {e}")
-        elif os.path.exists(DEFAULT_CORPUS):
-            print(f"[AutoTrain] Loading corpus: {DEFAULT_CORPUS}")
+                Log.write(f"[ERROR] Load model: {e}")
+
+        if os.path.exists(SESSION_PATH):
             try:
-                self.train_file(DEFAULT_CORPUS)
-                print("[AutoTrain] Training complete.\n")
-                self.log.info("Auto-trained from default corpus.")
-            except Exception as e:
-                print("[AutoTrain] Skipped due to error:", e)
-                self.log.error(f"AutoTrain failed: {e}")
-        else:
-            print(f"[AutoTrain] No corpus found at {DEFAULT_CORPUS}")
-            self.log.warning("No default corpus found for AutoTrain.")
+                with open(SESSION_PATH, "r", encoding="utf8") as f:
+                    self.session_data = json.load(f)
+                console.print(f"[dim]Restored {len(self.session_data)} entries.[/dim]")
+            except Exception:
+                pass
+
+    def _load_plugin_config(self):
+        """Load enable/disable flags."""
+        if not os.path.exists(PLUGIN_CONFIG):
+            return
+
+        try:
+            with open(PLUGIN_CONFIG, "r", encoding="utf8") as f:
+                cfg = json.load(f)
+            self.registry.apply_config(cfg)
+        except Exception as e:
+            console.print(f"[red]Plugin config load failed:[/red] {e}")
+
+    # EXIT + RESET ------------------------------------------------------------------------
+    def _reset_state(self):
+        """Wipes session but not model."""
+        self.session_data = []
+        self.feedback.reset()
+        console.print("[yellow]Session cleared.[/yellow]")
+
+    def _exit(self):
+        """
+        Exit CLI program cleanly.
+        Save current state.
+        """
+        console.rule("[red]Exiting[/red]")
+        self._save_state()
+        self.running = False
+
+
+    def _session_summary(self):
+        total_inputs = len([x for x in self.session_data if "input" in x])
+        total_comments = len([x for x in self.session_data if "comment" in x])
+        top_words = sorted(self.context.freq.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        t = Table(title="Session Summary", box=box.MINIMAL)
+        t.add_column("Metric", style="cyan")
+        t.add_column("Value", style="white")
+        t.add_row("Total inputs", str(total_inputs))
+        t.add_row("Comments added", str(total_comments))
+        t.add_row("Top words", ", ".join(w for w, _ in top_words) or "(none)")
+        return t
 
 
 if __name__ == "__main__":
-    CLI().start()
+    CLI().run()
 

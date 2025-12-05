@@ -1,6 +1,9 @@
 # basic_test.py -  sanity tests for hybrid_predictor file, to test prediction code 
 
-import sys, os, time
+import sys
+import os
+import time
+
 # add root to import path so we can improt local modules directly
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
@@ -29,8 +32,8 @@ def test_balance_switch():
     print("alpha works:", hp.alpha)
 
 if __name__ == "__main__":
-    start = time.time() # start time
-    test_train_and_suggest()
+    t0 = time.time()
+    test_train_suggest()
     test_balance_switch()
-    print(f"Basic tests completed in {round(time.time()-t0,3)} seconds.")
+    print(f"Basic tests completed in {round(time.time() - t0, 3)} seconds.")
 

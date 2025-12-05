@@ -1,5 +1,7 @@
 # test_cli.py - basic CLI smoke check
-import sys, os, io
+import sys
+import os
+import io
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from cli import main
 

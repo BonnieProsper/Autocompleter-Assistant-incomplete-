@@ -1,19 +1,22 @@
 version: 1
+
 formatters:
-  standard:
-    format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+  simple:
+    format: "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 handlers:
   console:
     class: logging.StreamHandler
-    formatter: standard
+    formatter: simple
     level: INFO
 
   file:
-    class: logging.FileHandler
-    filename: logs/autocompleter.log
-    formatter: standard
+    class: logging.handlers.RotatingFileHandler
+    formatter: simple
     level: DEBUG
+    filename: logs/autocompleter.log
+    maxBytes: 1048576      # 1 MB
+    backupCount: 5
 
 loggers:
   intelligent_autocompleter:
