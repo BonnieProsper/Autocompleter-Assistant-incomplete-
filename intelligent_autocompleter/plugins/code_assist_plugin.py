@@ -1,6 +1,6 @@
 # intelligent_autocompleter/plugins/code_assist_plugin.py
 from ..base import PluginBase
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 Candidate = Tuple[str, float]
 
