@@ -1,17 +1,7 @@
 # tests/test_fusion_ranker.py - unit tests for rank_normalized in FusionRanker
 
 import pytest
-from fusion_ranker import FusionRanker
-
-
-@pytest.fixture
-def ranker():
-    return FusionRanker(
-        w_markov=0.6,
-        w_semantic=0.3,
-        w_fuzzy=0.1,
-    )
-
+from intelligent_autocompleter.core.fusion_ranker import FusionRanker
 
 def test_rank_normalized_basic(ranker):
     out = ranker.rank_normalized(
@@ -23,10 +13,6 @@ def test_rank_normalized_basic(ranker):
 
     # score = .6*1.0 + .3*0.5 + .1*0.0 = 0.75
     assert out == [("apple", pytest.approx(0.75, rel=1e-6))]
-
-# tests/test_fusion_ranker.py
-import pytest
-from intelligent_autocompleter.core.fusion_ranker import FusionRanker
 
 def test_rank_normalized_basic_ordering():
     fr = FusionRanker(weights={"markov": 0.6, "embed": 0.4, "fuzzy": 0.0, "freq": 0.0, "recency": 0.0})
