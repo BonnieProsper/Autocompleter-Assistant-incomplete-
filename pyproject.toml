@@ -1,4 +1,4 @@
-[tool.poetry] 
+[tool.poetry]
 name = "intelligent-autocompleter"
 version = "0.1.0"
 description = "Intelligent autocompleter combining semantic and statistical models."
