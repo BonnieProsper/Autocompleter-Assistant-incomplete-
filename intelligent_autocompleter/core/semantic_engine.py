@@ -34,13 +34,16 @@ except Exception as e:
 try:
     from intelligent_autocompleter.utils.logger_utils import Log
 except Exception:
+
     class _SimpleLog:
         @staticmethod
         def write(msg: str):
             print(msg)
+
         @staticmethod
         def metric(*args, **kwargs):
             pass
+
     Log = _SimpleLog()  # type: ignore
 
 # types
@@ -104,7 +107,9 @@ class SemanticEngine:
         if self._model_loaded:
             return
         if not self.model_enabled:
-            raise RuntimeError("Model disabled (SentenceTransformer not available or model_enabled=False)")
+            raise RuntimeError(
+                "Model disabled (SentenceTransformer not available or model_enabled=False)"
+            )
         with self._model_lock:
             if not self._model_loaded:
                 # may raise if model not present, caller should handle error
@@ -136,7 +141,9 @@ class SemanticEngine:
                     if "entries" in st and "vectors" in st:
                         # convert vectors to np.array if stored as lists
                         st["vectors"] = [np.asarray(v) for v in st["vectors"]]
-                        st.setdefault("meta", {}).setdefault("count", len(st["entries"]))
+                        st.setdefault("meta", {}).setdefault(
+                            "count", len(st["entries"])
+                        )
                         return st
             except Exception as e:
                 Log.write(f"[SemanticEngine] corrupted store, recreating: {e}")
@@ -159,7 +166,9 @@ class SemanticEngine:
             with os.fdopen(tmp_fd, "wb") as fh:
                 pickle.dump(serializable, fh)
             os.replace(tmp_path, self.store_path)
-            Log.write(f"[SemanticEngine] vector store saved ({len(self._store['entries'])} entries).")
+            Log.write(
+                f"[SemanticEngine] vector store saved ({len(self._store['entries'])} entries)."
+            )
         except Exception as e:
             Log.write(f"[SemanticEngine] failed to save store: {e}")
             try:
@@ -237,7 +246,9 @@ class SemanticEngine:
                     self._store["entries"].append(txt)
                     self._store["vectors"].append(np.asarray(v, dtype=float))
             except Exception as e:
-                Log.write(f"[SemanticEngine] batch encode failed on slice {i}:{i+batch_size}: {e}")
+                Log.write(
+                    f"[SemanticEngine] batch encode failed on slice {i}:{i+batch_size}: {e}"
+                )
 
         self._store["meta"]["count"] = len(self._store["entries"])
         self._search_cache.clear()
@@ -263,7 +274,9 @@ class SemanticEngine:
         sims = dots / denom
         return sims
 
-    def search(self, query: str, k: int = 3, use_cache: bool = True) -> List[EntryScore]:
+    def search(
+        self, query: str, k: int = 3, use_cache: bool = True
+    ) -> List[EntryScore]:
         """Return top-k entries with cosine similarity scores (descending).
         If model disabled, returns empty list.
         """
@@ -316,7 +329,11 @@ class SemanticEngine:
         self._intent_rules = {
             "git_push": [contains("git push"), contains("push"), contains("upload")],
             "kill_process": [contains("kill"), all_terms("kill", "process")],
-            "list_python_processes": [contains("python processes"), contains("ps aux"), contains("list python")],
+            "list_python_processes": [
+                contains("python processes"),
+                contains("ps aux"),
+                contains("list python"),
+            ],
         }
 
     def add_intent_rule(self, intent: str, rule: RuleFn):
@@ -364,7 +381,9 @@ class SemanticEngine:
         """Map an intent to a shell command or action string."""
         self._intent_to_cmd[intent] = command
 
-    def predict_command(self, text: str, confidence_threshold: float = 0.8) -> Optional[str]:
+    def predict_command(
+        self, text: str, confidence_threshold: float = 0.8
+    ) -> Optional[str]:
         """
         Return a command string if an intent is confidently matched, otherwise fall back
         to semantic search (top-1).
@@ -415,4 +434,3 @@ class SemanticEngine:
         self._search_cache_time.clear()
         if persist:
             self._save_store()
-

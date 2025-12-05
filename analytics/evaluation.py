@@ -32,7 +32,9 @@ def load_corpus(path: Path) -> List[str]:
     return lines
 
 
-def split_corpus(corpus: List[str], train_frac: float = 0.8) -> Tuple[List[str], List[str]]:
+def split_corpus(
+    corpus: List[str], train_frac: float = 0.8
+) -> Tuple[List[str], List[str]]:
     """Deterministic train/test split."""
     n = max(1, int(len(corpus) * train_frac))
     return corpus[:n], corpus[n:]
@@ -45,7 +47,9 @@ def tokens(sentence: str) -> List[str]:
 
 def build_model_from_sentences(sentences: Iterable[str]) -> Autocompleter:
     """Train an Autocompleter instance on given sentences (mutates and returns)."""
-    engine = Autocompleter(data_path="data/eval_user_data.json")  # isolated persistence file
+    engine = Autocompleter(
+        data_path="data/eval_user_data.json"
+    )  # isolated persistence file
     # Reset persistence file to avoid accidental reuse
     p = Path(engine.data_path)
     if p.exists():
@@ -56,11 +60,13 @@ def build_model_from_sentences(sentences: Iterable[str]) -> Autocompleter:
     return engine
 
 
-def evaluate_on_test(engine: Autocompleter, test_sentences: Iterable[str], top_k: int = 5) -> Dict:
+def evaluate_on_test(
+    engine: Autocompleter, test_sentences: Iterable[str], top_k: int = 5
+) -> Dict:
     """
-    For each adjacent token pair (prev, true_next) in the test set, 
-    provide a partial prefix of the true_next (half of its length, min 1 char), 
-    then query model for suggestions and record whether true_next is present. 
+    For each adjacent token pair (prev, true_next) in the test set,
+    provide a partial prefix of the true_next (half of its length, min 1 char),
+    then query model for suggestions and record whether true_next is present.
     Returns statistics for fuzzy=True and fuzzy=False.
     """
     stats = {
@@ -125,16 +131,24 @@ def summarize_and_write(stats: Dict, out_path: Path):
         hit = stats[k]["hits"]
         tot = stats[k]["total"]
         t = stats[k]["time"]
-        print(f"{k.title():6s} | hits: {hit}/{tot} | acc: {pct(hit, tot)} | time: {t:.3f}s | avg time/query: {(t/tot if tot else 0):.6f}s")
+        print(
+            f"{k.title():6s} | hits: {hit}/{tot} | acc: {pct(hit, tot)} | time: {t:.3f}s | avg time/query: {(t/tot if tot else 0):.6f}s"
+        )
     print("==========================")
     print(f"Full JSON written to: {out_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Autocompleter on a corpus")
-    parser.add_argument("corpus", type=str, help="Path to corpus (one sentence per line)")
-    parser.add_argument("--out", type=str, default="evaluation_results.json", help="Output JSON file")
-    parser.add_argument("--train-frac", type=float, default=0.8, help="Training fraction (0..1)")
+    parser.add_argument(
+        "corpus", type=str, help="Path to corpus (one sentence per line)"
+    )
+    parser.add_argument(
+        "--out", type=str, default="evaluation_results.json", help="Output JSON file"
+    )
+    parser.add_argument(
+        "--train-frac", type=float, default=0.8, help="Training fraction (0..1)"
+    )
     args = parser.parse_args()
 
     corpus_path = Path(args.corpus)

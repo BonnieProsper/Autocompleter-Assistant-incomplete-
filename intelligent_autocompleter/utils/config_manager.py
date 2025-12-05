@@ -3,14 +3,15 @@
 import json
 import os
 
+
 class Config:
     def __init__(self, path="config.json"):
         self.path = path
         self.data = {
-            "balance": 0.6,   # markov/embedding weighting
+            "balance": 0.6,  # markov/embedding weighting
             "autosave": True,
             "max_suggestions": 5,
-            "theme": "default"
+            "theme": "default",
         }
         self._load()
 

@@ -20,11 +20,14 @@ try:
 except Exception:
     from core.hybrid_predictor import HybridPredictor  # type: ignore
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--warm", type=int, default=50, help="warmup iterations")
     parser.add_argument("--iters", type=int, default=500, help="measured iterations")
-    parser.add_argument("--fragment", type=str, default="the quick brown", help="input fragment")
+    parser.add_argument(
+        "--fragment", type=str, default="the quick brown", help="input fragment"
+    )
     args = parser.parse_args()
 
     hp = HybridPredictor(user="profile_user")
@@ -41,13 +44,16 @@ def main():
         t1 = time.perf_counter()
         latencies.append((t1 - t0) * 1000.0)  # ms
 
-    print("Stats (ms): mean=%.3f median=%.3f stdev=%.3f min=%.3f max=%.3f" % (
-        statistics.mean(latencies),
-        statistics.median(latencies),
-        statistics.pstdev(latencies),
-        min(latencies),
-        max(latencies),
-    ))
+    print(
+        "Stats (ms): mean=%.3f median=%.3f stdev=%.3f min=%.3f max=%.3f"
+        % (
+            statistics.mean(latencies),
+            statistics.median(latencies),
+            statistics.pstdev(latencies),
+            min(latencies),
+            max(latencies),
+        )
+    )
 
     warmup(hp)
     # compose queries (prefix fragments)
@@ -69,6 +75,7 @@ def main():
 
     print("Sample suggest output:", hp.suggest(args.fragment, topn=5))
 
+
 # small synthetic dataset (or load a corpus file if you have one)
 SAMPLE_SENTENCES = [
     "the quick brown fox jumps over the lazy dog",
@@ -78,9 +85,11 @@ SAMPLE_SENTENCES = [
     "could you show me the latest report",
 ]
 
+
 def warmup(hp: HybridPredictor):
     for s in SAMPLE_SENTENCES:
         hp.retrain(s)
+
 
 def benchmark(hp: HybridPredictor, queries, iterations=200):
     times = []
@@ -92,6 +101,7 @@ def benchmark(hp: HybridPredictor, queries, iterations=200):
         times.append((t1 - t0) * 1000.0)  # ms
     return times
 
+
 def summarize(times):
     times_sorted = sorted(times)
     return {
@@ -100,6 +110,7 @@ def summarize(times):
         "p90_ms": times_sorted[int(0.9 * len(times_sorted)) - 1],
         "max_ms": max(times_sorted),
     }
+
 
 if __name__ == "__main__":
     main()

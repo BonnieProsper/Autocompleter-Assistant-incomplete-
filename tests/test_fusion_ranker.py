@@ -3,6 +3,7 @@
 import pytest
 from intelligent_autocompleter.core.fusion_ranker import FusionRanker
 
+
 def test_rank_normalized_basic(ranker):
     out = ranker.rank_normalized(
         markov={"apple": 1.0},
@@ -14,34 +15,41 @@ def test_rank_normalized_basic(ranker):
     # score = .6*1.0 + .3*0.5 + .1*0.0 = 0.75
     assert out == [("apple", pytest.approx(0.75, rel=1e-6))]
 
+
 def test_rank_normalized_basic_ordering():
-    fr = FusionRanker(weights={"markov": 0.6, "embed": 0.4, "fuzzy": 0.0, "freq": 0.0, "recency": 0.0})
+    fr = FusionRanker(
+        weights={"markov": 0.6, "embed": 0.4, "fuzzy": 0.0, "freq": 0.0, "recency": 0.0}
+    )
     # normalized features for two words
     markov = {"apple": 1.0, "apply": 0.0}
-    embed  = {"apple": 0.0, "apply": 1.0}
-    fuzzy  = {"apple": 0.0, "apply": 0.0}
-    freq   = {"apple": 0.0, "apply": 0.0}
-    recency= {"apple": 0.0, "apply": 0.0}
+    embed = {"apple": 0.0, "apply": 1.0}
+    fuzzy = {"apple": 0.0, "apply": 0.0}
+    freq = {"apple": 0.0, "apply": 0.0}
+    recency = {"apple": 0.0, "apply": 0.0}
 
     ranked = fr.rank_normalized(markov, embed, fuzzy, freq, recency, topn=2)
     assert ranked[0][0] == "apple" and ranked[1][0] == "apply"
     # scores: apple = 0.6, apply = 0.4
     assert ranked[0][1] > ranked[1][1]
 
+
 def test_rank_normalized_tie_breaking_lexicographic():
     # equal weights produce equal scores -> tie-break lexicographically
-    fr = FusionRanker(weights={"markov": 0.5, "embed": 0.5, "fuzzy": 0.0, "freq": 0.0, "recency": 0.0})
+    fr = FusionRanker(
+        weights={"markov": 0.5, "embed": 0.5, "fuzzy": 0.0, "freq": 0.0, "recency": 0.0}
+    )
     # both words have identical normalized features -> same score
     markov = {"a": 1.0, "b": 1.0}
-    embed  = {"a": 0.0, "b": 0.0}
-    fuzzy  = {"a": 0.0, "b": 0.0}
-    freq   = {"a": 0.0, "b": 0.0}
-    recency= {"a": 0.0, "b": 0.0}
+    embed = {"a": 0.0, "b": 0.0}
+    fuzzy = {"a": 0.0, "b": 0.0}
+    freq = {"a": 0.0, "b": 0.0}
+    recency = {"a": 0.0, "b": 0.0}
 
     ranked = fr.rank_normalized(markov, embed, fuzzy, freq, recency, topn=2)
     # tie-breaker uses lexicographic ascending
     assert ranked[0][0] == "a"
     assert ranked[1][0] == "b"
+
 
 def test_rank_normalized_merges_keys(ranker):
     out = ranker.rank_normalized(
@@ -69,9 +77,26 @@ def test_rank_normalized_top_k(ranker):
     assert out[0][0] == "a"
     assert out[1][0] == "b"
 
+
 def test_debug_contributions():
-    normalized = {"x": {"markov": 0.5, "embed": 0.5, "personal": 0.0, "freq": 0.0, "fuzzy": 0.0, "recency": 0.0}}
-    weights = {"markov": 0.4, "embed": 0.6, "personal": 0.0, "freq": 0.0, "fuzzy": 0.0, "recency": 0.0}
+    normalized = {
+        "x": {
+            "markov": 0.5,
+            "embed": 0.5,
+            "personal": 0.0,
+            "freq": 0.0,
+            "fuzzy": 0.0,
+            "recency": 0.0,
+        }
+    }
+    weights = {
+        "markov": 0.4,
+        "embed": 0.6,
+        "personal": 0.0,
+        "freq": 0.0,
+        "fuzzy": 0.0,
+        "recency": 0.0,
+    }
     fr = FusionRanker(weights=weights)
     c = fr.debug_contributions("x", normalized, weights)
-    assert pytest.approx(c["_score"], rel=1e-6) == 0.5*0.4 + 0.5*0.6
+    assert pytest.approx(c["_score"], rel=1e-6) == 0.5 * 0.4 + 0.5 * 0.6

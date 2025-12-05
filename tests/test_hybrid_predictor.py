@@ -14,10 +14,19 @@ except Exception:
 
 class DummyFusion(FusionRanker):
     """Simple deterministic fusion used for tests. Returns average of provided maps."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def rank(self, markov=None, embeddings=None, fuzzy=None, base_freq=None, recency_map=None, topn=8):
+    def rank(
+        self,
+        markov=None,
+        embeddings=None,
+        fuzzy=None,
+        base_freq=None,
+        recency_map=None,
+        topn=8,
+    ):
         # simple scoring: prefer markov then embed then freq (weighted)
         scores = {}
         markov = markov or []
@@ -39,7 +48,9 @@ class HybridPredictorSuggestTests(unittest.TestCase):
     @patch("intelligent_autocompleter.core.hybrid_predictor.BKTree")
     @patch("intelligent_autocompleter.core.hybrid_predictor.FusionRanker")
     @patch("intelligent_autocompleter.core.hybrid_predictor.ReinforcementLearner")
-    def test_suggest_basic_flow(self, MockRL, MockFusion, MockBK, MockSemantic, MockMarkov):
+    def test_suggest_basic_flow(
+        self, MockRL, MockFusion, MockBK, MockSemantic, MockMarkov
+    ):
         """
         Test suggest() calls Markov, Semantic, BK, uses FusionRanker and returns ordered results.
         """
@@ -55,7 +66,12 @@ class HybridPredictorSuggestTests(unittest.TestCase):
 
         # RL weights
         mock_rl = MockRL.return_value
-        mock_rl.get_weights.return_value = {"semantic": 0.4, "markov": 0.5, "personal": 0.1, "plugin": 0.0}
+        mock_rl.get_weights.return_value = {
+            "semantic": 0.4,
+            "markov": 0.5,
+            "personal": 0.1,
+            "plugin": 0.0,
+        }
 
         # Use DummyFusion to produce deterministic ranking
         MockFusion.return_value = DummyFusion()

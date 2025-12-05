@@ -49,4 +49,6 @@ def print_eval_summary(eval_json: Dict):
         time_s = mode_stats.get("time", 0.0)
         acc = f"{(100.0 * hits / tot):.2f}%" if tot else "N/A"
         avg = (time_s / tot) if tot else 0.0
-        print(f"{mode.title():6s} -- hits: {hits}/{tot} acc: {acc} time: {time_s:.3f}s avg/query: {avg:.6f}s")
+        print(
+            f"{mode.title():6s} -- hits: {hits}/{tot} acc: {acc} time: {time_s:.3f}s avg/query: {avg:.6f}s"
+        )

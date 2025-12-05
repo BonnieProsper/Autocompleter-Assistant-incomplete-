@@ -66,7 +66,7 @@ def levenshtein_with_cutoff(a: str, b: str, max_dist: Optional[int] = None) -> i
 
 class BKTree:
     """BK-tree for approximate string lookup."""
-    
+
     class Node:
         __slots__ = ("word", "children", "count")
 
@@ -184,4 +184,3 @@ class BKTree:
         """Remove all nodes."""
         self.root = None
         self._size = 0
-

@@ -4,26 +4,30 @@ from typing import List, Dict, Any, Tuple
 
 Candidate = Tuple[str, float]
 
+
 class CodeAssist(PluginBase):
     """
     CodeAssist plugin has a predefined set of code pieces to assist the user
     with faster coding for common structures like loops, conditions,
     function definitions, and imports.
     """
+
     # plugin version/name
     name = "code_assist"
     version = "0.2"
 
     # predefined common code structure set
     SNIPPETS = {
-        "for": "for i in range(n):\n    pass", # for loop template
-        "if": "if cond:\n    pass",            # if statement template
-        "def": "def function_name(args):\n    '''docstring'''\n    return None", # function definition + docstring
-        "import": "import os\nimport sys",     # common imports (system and os libraries)
-         "try": "try:\n    pass\nexcept Exception as e:\n    print(e)", # try and exception error template
+        "for": "for i in range(n):\n    pass",  # for loop template
+        "if": "if cond:\n    pass",  # if statement template
+        "def": "def function_name(args):\n    '''docstring'''\n    return None",  # function definition + docstring
+        "import": "import os\nimport sys",  # common imports (system and os libraries)
+        "try": "try:\n    pass\nexcept Exception as e:\n    print(e)",  # try and exception error template
     }
 
-    def on_suggest(self, fragment: str, candidates: List[Candidate], bundle: Dict[str, Any]) -> List[Candidate]:
+    def on_suggest(
+        self, fragment: str, candidates: List[Candidate], bundle: Dict[str, Any]
+    ) -> List[Candidate]:
         """
         Suggests a code snippet based on the last token typed by the user.
         """

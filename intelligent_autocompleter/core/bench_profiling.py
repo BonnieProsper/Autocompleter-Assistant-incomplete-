@@ -11,6 +11,7 @@ import statistics
 import argparse
 from intelligent_autocompleter.autocompleter import AutoCompleter
 
+
 def profile(ac: AutoCompleter, fragments: list[str], runs: int = 200, warmup: int = 20):
     # warmup
     for _ in range(warmup):
@@ -25,6 +26,7 @@ def profile(ac: AutoCompleter, fragments: list[str], runs: int = 200, warmup: in
         times.append(t)
     return times
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=200)
@@ -34,15 +36,22 @@ def main():
     ac = AutoCompleter()
     try:
         # lightweight synthetic set
-        frags = ["hello wor", "this is a t", "import nump", "how to bui", "openai chatg"]
+        frags = [
+            "hello wor",
+            "this is a t",
+            "import nump",
+            "how to bui",
+            "openai chatg",
+        ]
         times = profile(ac, frags, runs=args.runs, warmup=args.warmup)
         print("calls:", len(times))
         print("mean ms:", statistics.mean(times))
         print("median ms:", statistics.median(times))
-        print("p99 ms:", sorted(times)[int(len(times)*0.99)-1])
+        print("p99 ms:", sorted(times)[int(len(times) * 0.99) - 1])
     finally:
         # ensure clean shutdown (persist)
         pass
+
 
 if __name__ == "__main__":
     main()

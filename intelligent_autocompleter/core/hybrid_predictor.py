@@ -14,7 +14,7 @@ Purpose:
  - Calls FusionRanker.rank_normalized(...) hot-path for speed and deterministic ordering.
  - Integrates ReinforcementLearner for live adaptive weights and feedback recording.
  - Deterministic-mode, debug_features() and explain() helpers for inspectability.
- 
+
  e.g takes a fragment and returns complete ranked predictions
 """
 
@@ -33,7 +33,9 @@ try:
     from intelligent_autocompleter.core.bktree import BKTree
     from intelligent_autocompleter.core.semantic_engine import SemanticEngine
     from intelligent_autocompleter.core.fusion_ranker import FusionRanker
-    from intelligent_autocompleter.core.reinforcement_learner import ReinforcementLearner
+    from intelligent_autocompleter.core.reinforcement_learner import (
+        ReinforcementLearner,
+    )
     from intelligent_autocompleter.core.feature_preprocessor import FeaturePreprocessor
     from intelligent_autocompleter.context_personal import CtxPersonal
     from intelligent_autocompleter.utils.logger_utils import Log
@@ -51,11 +53,13 @@ except Exception:
 Candidate = Tuple[str, float]
 
 
-def _canonical_key_from_maps(markov: Dict[str, float],
-                             embed: Dict[str, float],
-                             fuzzy: Dict[str, int],
-                             freq: Dict[str, float],
-                             recency: Dict[str, float]) -> Tuple:
+def _canonical_key_from_maps(
+    markov: Dict[str, float],
+    embed: Dict[str, float],
+    fuzzy: Dict[str, int],
+    freq: Dict[str, float],
+    recency: Dict[str, float],
+) -> Tuple:
     """
     Canonicalize the maps into a deterministic key suitable for OrderedDict based LRU caching.
     Uses sorted tuples (word, value) to ensure deterministic ordering.
@@ -84,13 +88,15 @@ class HybridPredictor:
       - save_state(path)/load_state(path)
     """
 
-    def __init__(self,
-                 user: str = "default",
-                 context_window: int = 2,
-                 registry: Optional[Any] = None,
-                 feedback_verbose: bool = False,
-                 ranker_preset: str = "balanced",
-                 normalized_cache_size: int = 4096):
+    def __init__(
+        self,
+        user: str = "default",
+        context_window: int = 2,
+        registry: Optional[Any] = None,
+        feedback_verbose: bool = False,
+        ranker_preset: str = "balanced",
+        normalized_cache_size: int = 4096,
+    ):
         # Core components
         self.markov = MarkovPredictor()
         self.semantic = SemanticEngine()
@@ -117,7 +123,9 @@ class HybridPredictor:
         self._bk_cache_ttl = 60.0
 
         # Normalized-feature LRU cache (OrderedDict used as simple LRU)
-        self._normalized_cache: "OrderedDict[Tuple, Dict[str, Dict[str, float]]]" = OrderedDict()
+        self._normalized_cache: "OrderedDict[Tuple, Dict[str, Dict[str, float]]]" = (
+            OrderedDict()
+        )
         self._normalized_cache_max = max(512, int(normalized_cache_size))
 
         # Last suggestion sources (for feedback resolution)
@@ -195,7 +203,10 @@ class HybridPredictor:
     def _bk_query_cached(self, q: str, maxd: int) -> List[Tuple[str, int]]:
         key = (q, maxd)
         now = time.time()
-        if key in self._bk_cache and (now - self._bk_cache_time.get(key, 0.0)) < self._bk_cache_ttl:
+        if (
+            key in self._bk_cache
+            and (now - self._bk_cache_time.get(key, 0.0)) < self._bk_cache_ttl
+        ):
             return self._bk_cache[key]
         try:
             res = self.bk.query(q, max_dist=maxd)
@@ -208,14 +219,18 @@ class HybridPredictor:
     # ------------------------------------
     # Normalized feature cache (simple LRU)
     # --------------------------------------
-    def _get_normalized_from_cache(self, key: Tuple) -> Optional[Dict[str, Dict[str, float]]]:
+    def _get_normalized_from_cache(
+        self, key: Tuple
+    ) -> Optional[Dict[str, Dict[str, float]]]:
         if key in self._normalized_cache:
             # move to end -> mark as recently used
             self._normalized_cache.move_to_end(key)
             return self._normalized_cache[key]
         return None
 
-    def _put_normalized_to_cache(self, key: Tuple, value: Dict[str, Dict[str, float]]) -> None:
+    def _put_normalized_to_cache(
+        self, key: Tuple, value: Dict[str, Dict[str, float]]
+    ) -> None:
         self._normalized_cache[key] = value
         self._normalized_cache.move_to_end(key)
         # evict oldest if over capacity
@@ -225,7 +240,9 @@ class HybridPredictor:
     # -------------------------
     # Suggest API (hot-path)
     # -------------------------
-    def suggest(self, fragment: str, topn: int = 6, fuzzy: bool = True) -> List[Candidate]:
+    def suggest(
+        self, fragment: str, topn: int = 6, fuzzy: bool = True
+    ) -> List[Candidate]:
         """
         Suggest completions for the last token in 'fragment'.
 
@@ -247,7 +264,7 @@ class HybridPredictor:
             toks = [t for t in fragment.strip().split() if t]
             if not toks:
                 return []
-            context = toks[-self.context_window:]
+            context = toks[-self.context_window :]
             last = context[-1].lower()
 
             # Markov
@@ -280,24 +297,43 @@ class HybridPredictor:
                 embed_map[w] = max(embed_map.get(w, 0.0), float(bonus))
 
             # personal and freq
-            personal_candidates = set(list(markov_map.keys()) + list(embed_map.keys())) | set(self.ctx.recent)
-            personal_map = {w: float(self.ctx.freq.get(w, 0.0)) for w in personal_candidates}
-            freq_map = {w: float(self.freq_stats.get(w, 0)) for w in set(list(markov_map.keys()) + list(embed_map.keys()) + list(personal_map.keys()))}
+            personal_candidates = set(
+                list(markov_map.keys()) + list(embed_map.keys())
+            ) | set(self.ctx.recent)
+            personal_map = {
+                w: float(self.ctx.freq.get(w, 0.0)) for w in personal_candidates
+            }
+            freq_map = {
+                w: float(self.freq_stats.get(w, 0))
+                for w in set(
+                    list(markov_map.keys())
+                    + list(embed_map.keys())
+                    + list(personal_map.keys())
+                )
+            }
 
             # Normalization: try LRU cache first
             recency_map = {}  # placeholder: if you track timestamps, pass them here
-            cache_key = _canonical_key_from_maps(markov_map, embed_map, {w: d for w, d in fuzzy_pairs}, freq_map, recency_map)
+            cache_key = _canonical_key_from_maps(
+                markov_map,
+                embed_map,
+                {w: d for w, d in fuzzy_pairs},
+                freq_map,
+                recency_map,
+            )
 
             normalized = None
             if not self._deterministic:
                 normalized = self._get_normalized_from_cache(cache_key)
 
             if normalized is None:
-                normalized = self.pre.normalize_all(markov=markov_map,
-                                                    embed=embed_map,
-                                                    fuzzy={w: d for w, d in fuzzy_pairs},
-                                                    freq=freq_map,
-                                                    recency=recency_map)
+                normalized = self.pre.normalize_all(
+                    markov=markov_map,
+                    embed=embed_map,
+                    fuzzy={w: d for w, d in fuzzy_pairs},
+                    freq=freq_map,
+                    recency=recency_map,
+                )
                 # If deterministic mode, do not cache (keeps tests reproducible if needed)
                 if not self._deterministic:
                     try:
@@ -316,8 +352,12 @@ class HybridPredictor:
                 rl_weights = {}
 
             ranker_weights = {
-                "markov": float(rl_weights.get("markov", rl_weights.get("markov", 0.35))),
-                "embed": float(rl_weights.get("semantic", rl_weights.get("embed", 0.45))),
+                "markov": float(
+                    rl_weights.get("markov", rl_weights.get("markov", 0.35))
+                ),
+                "embed": float(
+                    rl_weights.get("semantic", rl_weights.get("embed", 0.45))
+                ),
                 "personal": float(rl_weights.get("personal", 0.15)),
                 "freq": float(0.05),
                 "fuzzy": float(0.05),
@@ -326,12 +366,18 @@ class HybridPredictor:
 
             # Rank using FusionRanker hot-path
             ranker = FusionRanker(weights=ranker_weights)
-            ranked = ranker.rank_normalized(normalized, weights=ranker_weights, personalizer=self.ctx, topn=topn * 2)
+            ranked = ranker.rank_normalized(
+                normalized, weights=ranker_weights, personalizer=self.ctx, topn=topn * 2
+            )
 
             # Plugin pipeline
             if self.registry:
                 try:
-                    bundle = {"context": context, "user": getattr(self.ctx, "user", None), "last": last}
+                    bundle = {
+                        "context": context,
+                        "user": getattr(self.ctx, "user", None),
+                        "last": last,
+                    }
                     # registry may return list[(word,score)]
                     ranked = self.registry.run_suggest_pipeline(last, ranked, bundle)
                 except Exception as e:
@@ -378,7 +424,9 @@ class HybridPredictor:
     # -------------------------
     # Feedback API
     # -------------------------
-    def accept(self, word: str, context: Optional[str] = None, source: Optional[str] = None) -> None:
+    def accept(
+        self, word: str, context: Optional[str] = None, source: Optional[str] = None
+    ) -> None:
         if not word:
             return
         w = word.lower().strip()
@@ -394,11 +442,15 @@ class HybridPredictor:
 
         if self.registry:
             try:
-                self.registry.call_accept(w, {"user": getattr(self.ctx, "user", None), "source": resolved})
+                self.registry.call_accept(
+                    w, {"user": getattr(self.ctx, "user", None), "source": resolved}
+                )
             except Exception as e:
                 Log.write(f"[Hybrid] plugin accept hook failed: {e}")
 
-    def reject(self, word: str, context: Optional[str] = None, source: Optional[str] = None) -> None:
+    def reject(
+        self, word: str, context: Optional[str] = None, source: Optional[str] = None
+    ) -> None:
         if not word:
             return
         w = word.lower().strip()
@@ -410,7 +462,9 @@ class HybridPredictor:
         if self.registry:
             try:
                 if hasattr(self.registry, "call_reject"):
-                    self.registry.call_reject(w, {"user": getattr(self.ctx, "user", None), "source": resolved})
+                    self.registry.call_reject(
+                        w, {"user": getattr(self.ctx, "user", None), "source": resolved}
+                    )
             except Exception as e:
                 Log.write(f"[Hybrid] plugin reject hook failed: {e}")
 
@@ -431,15 +485,35 @@ class HybridPredictor:
             emb = dict(emb)
         except Exception:
             emb = {}
-        per = {w: self.ctx.freq.get(w, 0) for w in set(list(mk.keys()) + list(emb.keys()))}
-        freq = {w: self.freq_stats.get(w, 0) for w in set(list(mk.keys()) + list(emb.keys()) + list(per.keys()))}
+        per = {
+            w: self.ctx.freq.get(w, 0) for w in set(list(mk.keys()) + list(emb.keys()))
+        }
+        freq = {
+            w: self.freq_stats.get(w, 0)
+            for w in set(list(mk.keys()) + list(emb.keys()) + list(per.keys()))
+        }
         try:
-            fused = self.base_ranker.rank(markov=list(mk.items()), embeddings=list(emb.items()), fuzzy=[], base_freq=freq, recency_map={}, topn=topn)
+            fused = self.base_ranker.rank(
+                markov=list(mk.items()),
+                embeddings=list(emb.items()),
+                fuzzy=[],
+                base_freq=freq,
+                recency_map={},
+                topn=topn,
+            )
         except Exception:
             fused = []
-        return {"markov": mk, "embed": emb, "personal": per, "freq": freq, "fused": fused}
+        return {
+            "markov": mk,
+            "embed": emb,
+            "personal": per,
+            "freq": freq,
+            "fused": fused,
+        }
 
-    def debug_features(self, fragment: str, topn: int = 10) -> Dict[str, Dict[str, float]]:
+    def debug_features(
+        self, fragment: str, topn: int = 10
+    ) -> Dict[str, Dict[str, float]]:
         """
         Return normalized feature map and contribution debug info for the top candidates for a fragment.
         For unit tests and explainability in the UI.
@@ -459,7 +533,10 @@ class HybridPredictor:
             if callable(emb_fn):
                 embed_list = emb_fn(toks[-1].lower(), topn=topn * 3)
             else:
-                embed_list = [(h, s) for h, s in self.semantic.search(toks[-1].lower(), k=topn * 3)]
+                embed_list = [
+                    (h, s)
+                    for h, s in self.semantic.search(toks[-1].lower(), k=topn * 3)
+                ]
         except Exception:
             embed_list = []
         embed_map = {w: float(s) for w, s in embed_list}
@@ -467,8 +544,17 @@ class HybridPredictor:
         maxd = self._adaptive_maxd(toks[-1].lower())
         if maxd > 0:
             fuzzy_pairs = self._bk_query_cached(toks[-1].lower(), maxd)
-        freq_map = {w: float(self.freq_stats.get(w, 0)) for w in set(list(markov_map.keys()) + list(embed_map.keys()))}
-        normalized = self.pre.normalize_all(markov=markov_map, embed=embed_map, fuzzy={w: d for w, d in fuzzy_pairs}, freq=freq_map, recency={})
+        freq_map = {
+            w: float(self.freq_stats.get(w, 0))
+            for w in set(list(markov_map.keys()) + list(embed_map.keys()))
+        }
+        normalized = self.pre.normalize_all(
+            markov=markov_map,
+            embed=embed_map,
+            fuzzy={w: d for w, d in fuzzy_pairs},
+            freq=freq_map,
+            recency={},
+        )
         contributions = {}
         weights = self.reinforcement.get_weights()
         ranker_weights = {
@@ -480,6 +566,7 @@ class HybridPredictor:
             "recency": 0.0,
         }
         from intelligent_autocompleter.core.fusion_ranker import FusionRanker
+
         fr = FusionRanker(weights=ranker_weights)
         for w in words:
             contributions[w] = fr.debug_contributions(w, normalized, ranker_weights)
@@ -492,13 +579,16 @@ class HybridPredictor:
         try:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "wb") as fh:
-                pickle.dump({
-                    "markov": self.markov,
-                    "ctx": self.ctx,
-                    "bk": self.bk,
-                    "freq": self.freq_stats,
-                    "accepted": self.accepted,
-                }, fh)
+                pickle.dump(
+                    {
+                        "markov": self.markov,
+                        "ctx": self.ctx,
+                        "bk": self.bk,
+                        "freq": self.freq_stats,
+                        "accepted": self.accepted,
+                    },
+                    fh,
+                )
             Log.write(f"[Hybrid] state saved -> {path}")
         except Exception as e:
             Log.write(f"[Hybrid] save_state failed: {e}")

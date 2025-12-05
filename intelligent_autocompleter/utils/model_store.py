@@ -18,13 +18,15 @@ os.makedirs(DATA_DIRECTORY, exist_ok=True)  # Create if it doesn’t exist
 
 # Paths for each stored file
 MARKOV_PATH = os.path.join(DATA_DIRECTORY, "markov_model.json")
-EMBED_PATH  = os.path.join(DATA_DIRECTORY, "embeddings.pkl")
-USER_CACHE  = os.path.join(DATA_DIRECTORY, "user_context.json")
+EMBED_PATH = os.path.join(DATA_DIRECTORY, "embeddings.pkl")
+USER_CACHE = os.path.join(DATA_DIRECTORY, "user_context.json")
+
 
 # Helper Functions ---------------
 def ts() -> str:
     """Return timestamp for logging."""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 # Markov Model Persistence -------------------------
 def save_markov(model: dict):
@@ -39,6 +41,7 @@ def save_markov(model: dict):
         print(f"[{ts()}] Saved Markov model ({len(model)} keys)")
     except Exception as e:
         print(f"[{ts()}] save_markov error: {e}")
+
 
 def load_markov() -> dict:
     """
@@ -57,6 +60,7 @@ def load_markov() -> dict:
         print(f"[{ts()}] load_markov error: {e}")
         return {}
 
+
 # Embeddings Persistence --------------------------
 def save_embeddings(vectors: dict):
     """
@@ -70,6 +74,7 @@ def save_embeddings(vectors: dict):
         print(f"[{ts()}] Saved {len(vectors)} embeddings")
     except Exception as e:
         print(f"[{ts()}] save_embeddings error: {e}")
+
 
 def load_embeddings() -> dict:
     """
@@ -87,6 +92,7 @@ def load_embeddings() -> dict:
     except Exception as e:
         print(f"[{ts()}] load_embeddings error: {e}")
         return {}
+
 
 # User Cache Persistence ------------------
 def save_user_cache(user_data: dict):
@@ -106,6 +112,7 @@ def save_user_cache(user_data: dict):
     except Exception as e:
         print(f"[{ts()}] save_user_cache error: {e}")
 
+
 def load_user_cache() -> dict:
     """
     Load user context from disk. Initialize with defaults if none exists.
@@ -118,9 +125,10 @@ def load_user_cache() -> dict:
     try:
         with open(USER_CACHE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        print(f"[{ts()}] Loaded user cache ({len(data.get('history', []))} history items)")
+        print(
+            f"[{ts()}] Loaded user cache ({len(data.get('history', []))} history items)"
+        )
         return data
     except Exception as e:
         print(f"[{ts()}] load_user_cache error: {e}")
         return {"history": [], "suggestions": {}, "xp": 0}
-

@@ -13,9 +13,9 @@ Design goals:
  - Clean, testable public API.
 
 Includes:
- - rank_normalized(): fast path that accepts per-feature normalized maps (word -> [0,1]), 
+ - rank_normalized(): fast path that accepts per-feature normalized maps (word -> [0,1]),
    preferred hot-path: accepts normalized per-word feature dicts
- - rank(): compatibility wrapper that accepts raw/unnormalized inputs and normalizes them, 
+ - rank(): compatibility wrapper that accepts raw/unnormalized inputs and normalizes them,
    backward compatible list based API
  - deterministic tie-breaking and stable ordering for unit tests.
  - optional NumPy acceleration for heavy normalization functions, but hot path (rank_normalized)
@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 # Optional numpy acceleration
 try:
     import numpy as np  # type: ignore
+
     NUMPY_AVAILABLE = True
 except Exception:
     NUMPY_AVAILABLE = False
@@ -48,27 +49,56 @@ except Exception:
 Candidate = Tuple[str, float]
 CandidateList = List[Candidate]
 FuzzyList = List[Tuple[str, int]]
-FeatureMap = Dict[str, float]      # word -> normalized value
+FeatureMap = Dict[str, float]  # word -> normalized value
 NormalizedPerWord = Dict[str, Dict[str, float]]  # word -> {feature: normalized_value}
-Weights = Dict[str, float]         # feature name -> weight (not necessarily normalized)
+Weights = Dict[str, float]  # feature name -> weight (not necessarily normalized)
 
 
 # Protocols (for static typing of pluggable components)
 class PersonalizerProtocol(Protocol):
-    def bias_words(self, ranked: CandidateList) -> CandidateList:
-        ...
+    def bias_words(self, ranked: CandidateList) -> CandidateList: ...
 
 
 # Preset weight profiles
 _PRESETS: Dict[str, Weights] = {
-    "strict":   {"markov": 0.6, "embed": 0.1, "fuzzy": 0.05, "freq": 0.2, "personal": 0.05, "recency": 0.0},
-    "balanced": {"markov": 0.4, "embed": 0.3, "fuzzy": 0.1,  "freq": 0.15, "personal": 0.05, "recency": 0.0},
-    "creative": {"markov": 0.2, "embed": 0.6, "fuzzy": 0.05, "freq": 0.05, "personal": 0.1, "recency": 0.0},
-    "personal": {"markov": 0.25,"embed": 0.25,"fuzzy": 0.05, "freq": 0.1, "personal": 0.35, "recency": 0.0},
+    "strict": {
+        "markov": 0.6,
+        "embed": 0.1,
+        "fuzzy": 0.05,
+        "freq": 0.2,
+        "personal": 0.05,
+        "recency": 0.0,
+    },
+    "balanced": {
+        "markov": 0.4,
+        "embed": 0.3,
+        "fuzzy": 0.1,
+        "freq": 0.15,
+        "personal": 0.05,
+        "recency": 0.0,
+    },
+    "creative": {
+        "markov": 0.2,
+        "embed": 0.6,
+        "fuzzy": 0.05,
+        "freq": 0.05,
+        "personal": 0.1,
+        "recency": 0.0,
+    },
+    "personal": {
+        "markov": 0.25,
+        "embed": 0.25,
+        "fuzzy": 0.05,
+        "freq": 0.1,
+        "personal": 0.35,
+        "recency": 0.0,
+    },
 }
 
 
-def _safe_normalize_weights(weights: Optional[Weights], preset: str = "balanced") -> Weights:
+def _safe_normalize_weights(
+    weights: Optional[Weights], preset: str = "balanced"
+) -> Weights:
     base = dict(_PRESETS.get(preset, _PRESETS["balanced"]))
     if weights:
         base.update(weights)
@@ -87,21 +117,25 @@ class FusionRanker:
     The normalized API avoids re-normalizing on the hot-path and is preferred for performance.
     """
 
-    def __init__(self,
-                 preset: str = "balanced",
-                 weights: Optional[Weights] = None,
-                 personalizer: Optional[PersonalizerProtocol] = None):
+    def __init__(
+        self,
+        preset: str = "balanced",
+        weights: Optional[Weights] = None,
+        personalizer: Optional[PersonalizerProtocol] = None,
+    ):
         self.weights = _safe_normalize_weights(weights or None, preset)
         self.personalizer = personalizer
 
     # ---------------------------------
     # Hot-path: rank normalized maps
     # ----------------------------------
-    def rank_normalized(self,
-                        normalized: NormalizedPerWord,
-                        weights: Optional[Weights] = None,
-                        personalizer: Optional[PersonalizerProtocol] = None,
-                        topn: int = 8) -> CandidateList:
+    def rank_normalized(
+        self,
+        normalized: NormalizedPerWord,
+        weights: Optional[Weights] = None,
+        personalizer: Optional[PersonalizerProtocol] = None,
+        topn: int = 8,
+    ) -> CandidateList:
         """
         Rank using pre-normalized feature values.
 
@@ -130,7 +164,9 @@ class FusionRanker:
                 arr = [float(normalized[w].get(feat, 0.0)) for w in words]
                 mat.append(arr)
             A = np.array(mat, dtype=float)  # shape: (n_features, n_words)
-            w = np.array([weights.get(f, 0.0) for f in feature_keys], dtype=float)[:, None]  # (n_features,1)
+            w = np.array([weights.get(f, 0.0) for f in feature_keys], dtype=float)[
+                :, None
+            ]  # (n_features,1)
             scores = (w * A).sum(axis=0)  # (n_words,)
             scores_list = scores.tolist()
         else:
@@ -144,7 +180,9 @@ class FusionRanker:
                 scores_list.append(s)
 
         scored = list(zip(words, scores_list))
-        scored.sort(key=lambda kv: (-kv[1], kv[0]))  # deterministic: score desc, then word asc
+        scored.sort(
+            key=lambda kv: (-kv[1], kv[0])
+        )  # deterministic: score desc, then word asc
 
         # Personalizer post-processing (if present)
         if personalizer:
@@ -159,13 +197,15 @@ class FusionRanker:
     # ---------------------------
     # Compatibility: list-based API (keeps previous behavior)
     # -----------------------------------
-    def rank(self,
-             markov: Optional[List[Tuple[str, float]]] = None,
-             embeddings: Optional[List[Tuple[str, float]]] = None,
-             fuzzy: Optional[FuzzyList] = None,
-             base_freq: Optional[Dict[str, float]] = None,
-             recency_map: Optional[Dict[str, float]] = None,
-             topn: int = 8) -> CandidateList:
+    def rank(
+        self,
+        markov: Optional[List[Tuple[str, float]]] = None,
+        embeddings: Optional[List[Tuple[str, float]]] = None,
+        fuzzy: Optional[FuzzyList] = None,
+        base_freq: Optional[Dict[str, float]] = None,
+        recency_map: Optional[Dict[str, float]] = None,
+        topn: int = 8,
+    ) -> CandidateList:
         """
         Backwards compatible API: accepts lists/maps and performs normalization internally.
         This is slower than rank_normalized for repeated calls with same candidate sets.
@@ -177,7 +217,9 @@ class FusionRanker:
         recency_map = recency_map or {}
 
         # Collect candidates in deterministic order
-        cand = set([w for w, _ in markov] + [w for w, _ in embeddings] + list(base_freq.keys()))
+        cand = set(
+            [w for w, _ in markov] + [w for w, _ in embeddings] + list(base_freq.keys())
+        )
         if not cand:
             return []
         words = sorted(cand)
@@ -203,7 +245,9 @@ class FusionRanker:
         # Convert to per-word normalized dict
         mvals = [markov_map.get(w, 0.0) for w in words]
         evals = [embed_map.get(w, 0.0) for w in words]
-        fvals = [1.0 / (1.0 + float(fuzzy_map.get(w, 999))) for w in words]  # similarity-like
+        fvals = [
+            1.0 / (1.0 + float(fuzzy_map.get(w, 999))) for w in words
+        ]  # similarity-like
         fqvals = [math.log1p(freq_map.get(w, 0.0)) for w in words]
         # recency: newer better -> normalized age inverted
         rec_raw = []
@@ -240,7 +284,9 @@ class FusionRanker:
     # Helpers: debug contributions
     # ------------------------------
     @staticmethod
-    def debug_contributions(word: str, normalized: NormalizedPerWord, weights: Weights) -> Dict[str, float]:
+    def debug_contributions(
+        word: str, normalized: NormalizedPerWord, weights: Weights
+    ) -> Dict[str, float]:
         """
         Return per-feature weighted contributions for a single word given a normalized map and weights.
         Good for explainability/inspecting scores.

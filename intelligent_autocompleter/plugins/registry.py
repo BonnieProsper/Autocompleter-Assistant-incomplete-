@@ -17,6 +17,7 @@ Candidate = Tuple[str, float]
 
 class PluginEntry:
     """Wrapper tracking plugin instance and enable/disable state."""
+
     def __init__(self, inst: PluginBase):
         self.inst = inst
         self.enabled = True
@@ -30,6 +31,7 @@ class PluginRegistry:
     Central registry of plugins.
     Deterministic, safe, isolated plugin lifecycle & suggestion pipeline.
     """
+
     def __init__(self):
         self._plugins: Dict[str, PluginEntry] = {}
 
@@ -92,7 +94,7 @@ class PluginRegistry:
         self,
         fragment: str,
         suggestions: List[Candidate],
-        bundle: Optional[Dict[str, Any]] = None
+        bundle: Optional[Dict[str, Any]] = None,
     ) -> List[Tuple[str, float, str]]:
 
         bundle = bundle or {}

@@ -4,6 +4,7 @@
 import math
 from collections import Counter
 
+
 def score_uncertainty(tokens):
     """
     Measures uncertainty using partial tokens/trailing punctuation
@@ -19,6 +20,7 @@ def score_uncertainty(tokens):
         return 0.2
     # crude logic, if token ends with non-space fragment its more uncertain
     return 0.1
+
 
 def score_repetition(tokens):
     """If user repeats same token a lot, returns a higher score."""

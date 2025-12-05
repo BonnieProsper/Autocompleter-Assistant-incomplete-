@@ -21,13 +21,18 @@ from pathlib import Path
 
 try:
     from intelligent_autocompleter.core.hybrid_predictor import HybridPredictor
-    from intelligent_autocompleter.core.model_store import load_markov, save_markov, load_user_cache, save_user_cache
+    from intelligent_autocompleter.core.model_store import (
+        load_markov,
+        save_markov,
+        load_user_cache,
+        save_user_cache,
+    )
     from intelligent_autocompleter.utils.logger_utils import Log
 except Exception:
     # Local fallback for tests etc, type: ignore
-    from core.hybrid_predictor import HybridPredictor 
-    from model_store import load_markov, save_markov, load_user_cache, save_user_cache 
-    from logger_utils import Log  
+    from core.hybrid_predictor import HybridPredictor
+    from model_store import load_markov, save_markov, load_user_cache, save_user_cache
+    from logger_utils import Log
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
@@ -66,7 +71,7 @@ class AutoCompleter:
         # build predictor with dependency injection options
         self.hp = HybridPredictor(user=user, ranker_preset=ranker_preset)
         self._started_at = time.time()
-        self._restore_state() # restore persisted state
+        self._restore_state()  # restore persisted state
         atexit.register(self._shutdown)
 
     # Persistence ---------------------------------------------------------
@@ -76,19 +81,29 @@ class AutoCompleter:
             if raw_markov:
                 try:
                     # try hybrid predictor adapter
-                    if hasattr(self.hp, "load_state") and callable(getattr(self.hp, "load_state")):
+                    if hasattr(self.hp, "load_state") and callable(
+                        getattr(self.hp, "load_state")
+                    ):
                         # Implementations expect path or payload
                         # attempt to load markov into predictor via load_state if available
                         # first try structured load_state: many versions accept a path for full state
                         # fall back to set internals if load_state not appropriate
-                        if hasattr(self.hp, "markov") and hasattr(self.hp.markov, "load_state"):
+                        if hasattr(self.hp, "markov") and hasattr(
+                            self.hp.markov, "load_state"
+                        ):
                             self.hp.markov.load_state({"chain": raw_markov})
-                            _log("[AutoCompleter] markov restored via markov.load_state()")
+                            _log(
+                                "[AutoCompleter] markov restored via markov.load_state()"
+                            )
                         else:
                             # attempt to set _markov internals
-                            if hasattr(self.hp, "markov") and hasattr(self.hp.markov, "train_sentence"):
+                            if hasattr(self.hp, "markov") and hasattr(
+                                self.hp.markov, "train_sentence"
+                            ):
                                 # can retrain quickly from serialized table if needed, skip heavy restoration
-                                _log("[AutoCompleter] markov present (skipping full restore).")
+                                _log(
+                                    "[AutoCompleter] markov present (skipping full restore)."
+                                )
                 except Exception as e:
                     _log(f"[AutoCompleter] markov restore failed: {e}")
             else:
@@ -151,14 +166,21 @@ class AutoCompleter:
             pass
 
         # inspect internals
-        table = getattr(mk, "_chain", None) or getattr(mk, "_table", None) or getattr(mk, "table", None)
+        table = (
+            getattr(mk, "_chain", None)
+            or getattr(mk, "_table", None)
+            or getattr(mk, "table", None)
+        )
         if isinstance(table, dict):
             for prev, cnts in table.items():
                 try:
                     out[prev] = dict(cnts)
                 except Exception:
                     try:
-                        out[prev] = {k: int(v) for k, v in (cnts.items() if hasattr(cnts, "items") else [])}
+                        out[prev] = {
+                            k: int(v)
+                            for k, v in (cnts.items() if hasattr(cnts, "items") else [])
+                        }
                     except Exception:
                         out[prev] = {}
         return out
@@ -182,10 +204,17 @@ class AutoCompleter:
                     else:
                         # fallback to history list
                         if hasattr(ctx, "hist") and hasattr(ctx.hist, "most_common"):
-                            hist_items = [{"word": w, "count": int(c)} for w, c in ctx.hist.most_common(200)]
-                            save_user_cache({"history": hist_items, "saved_at": int(time.time())})
+                            hist_items = [
+                                {"word": w, "count": int(c)}
+                                for w, c in ctx.hist.most_common(200)
+                            ]
+                            save_user_cache(
+                                {"history": hist_items, "saved_at": int(time.time())}
+                            )
                         else:
-                            save_user_cache({"history": [], "saved_at": int(time.time())})
+                            save_user_cache(
+                                {"history": [], "saved_at": int(time.time())}
+                            )
                     _log("[AutoCompleter] user context saved")
                 except Exception as e:
                     _log(f"[AutoCompleter] save_user_cache failed: {e}")
@@ -212,7 +241,9 @@ class AutoCompleter:
         except Exception as e:
             _log(f"[AutoCompleter] retrain failed: {e}")
 
-    def accept(self, word: str, context: str | None = None, source: str | None = None) -> None:
+    def accept(
+        self, word: str, context: str | None = None, source: str | None = None
+    ) -> None:
         try:
             if hasattr(self.hp, "accept"):
                 self.hp.accept(word, context=context, source=source)
@@ -221,7 +252,9 @@ class AutoCompleter:
         except Exception as e:
             _log(f"[AutoCompleter] accept failed: {e}")
 
-    def reject(self, word: str, context: str | None = None, source: str | None = None) -> None:
+    def reject(
+        self, word: str, context: str | None = None, source: str | None = None
+    ) -> None:
         try:
             if hasattr(self.hp, "reject"):
                 self.hp.reject(word, context=context, source=source)
@@ -242,9 +275,8 @@ class AutoCompleter:
         except Exception:
             return {"uptime_s": 0.0, "vocab_size": 0}
 
+
 # quick manual test
 if __name__ == "__main__":
     ac = AutoCompleter()
     print("Try: ac.suggest('the')")
-
-

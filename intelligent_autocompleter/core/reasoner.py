@@ -25,10 +25,12 @@ from typing import List, Dict, Any, Optional, Iterable, Callable
 try:
     from intelligent_autocompleter.utils.logger_utils import Log
 except Exception:
+
     class Log:  # minimal shim
         @staticmethod
         def write(msg: str):
             print(msg)
+
 
 # try to import SemanticEngine and optionally other helpers
 try:
@@ -61,12 +63,17 @@ class ReasoningResult:
     message: human-friendly message
     metadata: optional dict for structured data (e.g. {"pattern": r"...", "suggestion": "git"})
     """
+
     type: str
     message: str
     metadata: Dict[str, Any] | None = None
 
     def as_dict(self) -> Dict[str, Any]:
-        return {"type": self.type, "message": self.message, "metadata": self.metadata or {}}
+        return {
+            "type": self.type,
+            "message": self.message,
+            "metadata": self.metadata or {},
+        }
 
 
 # -------------------------
@@ -84,7 +91,9 @@ class RuleChecker:
     ]
 
     def __init__(self, patterns: Optional[Iterable[str]] = None):
-        self.patterns = list(patterns) if patterns is not None else list(self.DANGEROUS_PATTERNS)
+        self.patterns = (
+            list(patterns) if patterns is not None else list(self.DANGEROUS_PATTERNS)
+        )
         # compile for speed
         self._compiled = [re.compile(p, flags=re.IGNORECASE) for p in self.patterns]
 
@@ -92,11 +101,13 @@ class RuleChecker:
         out = []
         for pat, cre in zip(self.patterns, self._compiled):
             if cre.search(text):
-                out.append(ReasoningResult(
-                    type="warning",
-                    message=f"Command looks dangerous: '{text.strip()}'",
-                    metadata={"pattern": pat}
-                ))
+                out.append(
+                    ReasoningResult(
+                        type="warning",
+                        message=f"Command looks dangerous: '{text.strip()}'",
+                        metadata={"pattern": pat},
+                    )
+                )
         return out
 
 
@@ -114,17 +125,21 @@ class TypoSuggester:
         self.bk = bk_tree
         self.max_edit = max_edit
         # precompile patterns
-        self._patterns = [(re.compile(p, flags=re.IGNORECASE), v) for p, v in self.COMMON_SUBS.items()]
+        self._patterns = [
+            (re.compile(p, flags=re.IGNORECASE), v) for p, v in self.COMMON_SUBS.items()
+        ]
 
     def suggest(self, text: str) -> List[ReasoningResult]:
         out = []
         for cre, rep in self._patterns:
             if cre.search(text):
-                out.append(ReasoningResult(
-                    type="correction",
-                    message=f"Possible typo: did you mean '{rep}'?",
-                    metadata={"correction": rep}
-                ))
+                out.append(
+                    ReasoningResult(
+                        type="correction",
+                        message=f"Possible typo: did you mean '{rep}'?",
+                        metadata={"correction": rep},
+                    )
+                )
         # optional fuzzy single-word suggestions when BKTree available
         if self.bk:
             # inspect words and query bk for near matches
@@ -137,11 +152,13 @@ class TypoSuggester:
                 # pick best not identical candidate
                 for cand, dist in res:
                     if cand.lower() != w.lower():
-                        out.append(ReasoningResult(
-                            type="correction",
-                            message=f"Fuzzy suggestion: '{w}' → '{cand}' (edits={dist})",
-                            metadata={"from": w, "to": cand, "edits": dist}
-                        ))
+                        out.append(
+                            ReasoningResult(
+                                type="correction",
+                                message=f"Fuzzy suggestion: '{w}' → '{cand}' (edits={dist})",
+                                metadata={"from": w, "to": cand, "edits": dist},
+                            )
+                        )
                         break
         return out
 
@@ -159,23 +176,31 @@ class HeuristicPredictor:
         out = []
         s = text.strip()
         if s.startswith("git "):
-            out.append(ReasoningResult(
-                type="prediction",
-                message="Likely next git commands: " + ", ".join(self.GIT_FOLLOWUPS),
-                metadata={"options": self.GIT_FOLLOWUPS}
-            ))
+            out.append(
+                ReasoningResult(
+                    type="prediction",
+                    message="Likely next git commands: "
+                    + ", ".join(self.GIT_FOLLOWUPS),
+                    metadata={"options": self.GIT_FOLLOWUPS},
+                )
+            )
         elif s.startswith("docker "):
-            out.append(ReasoningResult(
-                type="prediction",
-                message="Likely next docker subcommands: " + ", ".join(self.DOCKER_FOLLOWUPS),
-                metadata={"options": self.DOCKER_FOLLOWUPS}
-            ))
+            out.append(
+                ReasoningResult(
+                    type="prediction",
+                    message="Likely next docker subcommands: "
+                    + ", ".join(self.DOCKER_FOLLOWUPS),
+                    metadata={"options": self.DOCKER_FOLLOWUPS},
+                )
+            )
         elif s.startswith("python ") or s.endswith(".py"):
-            out.append(ReasoningResult(
-                type="suggestion",
-                message="Consider running with `-m` or `-u` if intending packages or unbuffered I/O",
-                metadata={}
-            ))
+            out.append(
+                ReasoningResult(
+                    type="suggestion",
+                    message="Consider running with `-m` or `-u` if intending packages or unbuffered I/O",
+                    metadata={},
+                )
+            )
         return out
 
 
@@ -185,7 +210,12 @@ class SemanticBridge:
     Returns ReasoningResult(type='semantic') if successful.
     """
 
-    def __init__(self, engine: Optional[SemanticEngine], rules: RuleChecker, min_confidence: float = 0.8):
+    def __init__(
+        self,
+        engine: Optional[SemanticEngine],
+        rules: RuleChecker,
+        min_confidence: float = 0.8,
+    ):
         self.engine = engine
         self.rules = rules
         self.min_confidence = float(min_confidence)
@@ -194,7 +224,7 @@ class SemanticBridge:
         if not self.engine:
             return []
         try:
-            # infer intent with score if engine supports it 
+            # infer intent with score if engine supports it
             intent_out = None
             score = None
             try:
@@ -209,7 +239,13 @@ class SemanticBridge:
                 try:
                     cmd = self.engine.predict_command(text)
                     if cmd:
-                        return [ReasoningResult(type="semantic", message=f"AI Suggestion → {cmd}", metadata={"cmd": cmd})]
+                        return [
+                            ReasoningResult(
+                                type="semantic",
+                                message=f"AI Suggestion → {cmd}",
+                                metadata={"cmd": cmd},
+                            )
+                        ]
                 except Exception:
                     return []
 
@@ -220,14 +256,24 @@ class SemanticBridge:
                     cmd_map = getattr(self.engine, "intent_commands", {}) or {}
                 except Exception:
                     cmd_map = {}
-                if intent_out in cmd_map and (score is None or score >= self.min_confidence):
+                if intent_out in cmd_map and (
+                    score is None or score >= self.min_confidence
+                ):
                     cmd = cmd_map[intent_out]
                     # run safety checks on command string before returning
                     for r in self.rules.check(cmd):
                         # if any dangerous pattern applies, refuse to suggest command
-                        Log.write(f"[Reasoner] semantic suggestion suppressed: matched dangerous pattern {r.metadata}")
+                        Log.write(
+                            f"[Reasoner] semantic suggestion suppressed: matched dangerous pattern {r.metadata}"
+                        )
                         return []
-                    return [ReasoningResult(type="semantic", message=f"AI Suggestion → {cmd}", metadata={"intent": intent_out, "score": score})]
+                    return [
+                        ReasoningResult(
+                            type="semantic",
+                            message=f"AI Suggestion → {cmd}",
+                            metadata={"intent": intent_out, "score": score},
+                        )
+                    ]
 
             # fallback: ask engine for best matching stored entry
             try:
@@ -236,9 +282,17 @@ class SemanticBridge:
                     entry, sim = hits[0]
                     # sanitize entry
                     for r in self.rules.check(entry):
-                        Log.write(f"[Reasoner] semantic fallback suppressed: matched dangerous pattern {r.metadata}")
+                        Log.write(
+                            f"[Reasoner] semantic fallback suppressed: matched dangerous pattern {r.metadata}"
+                        )
                         return []
-                    return [ReasoningResult(type="semantic", message=f"AI Suggestion → {entry}", metadata={"score": sim})]
+                    return [
+                        ReasoningResult(
+                            type="semantic",
+                            message=f"AI Suggestion → {entry}",
+                            metadata={"score": sim},
+                        )
+                    ]
             except Exception:
                 pass
 
@@ -256,11 +310,13 @@ class ReasonerPipeline:
     API 'analyze_input(input_str)' that returns a dict of lists grouped by category.
     """
 
-    def __init__(self,
-                 plugin_registry: Optional[object] = None,
-                 semantic_engine: Optional[SemanticEngine] = None,
-                 bk_tree: Optional[object] = None,
-                 config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        plugin_registry: Optional[object] = None,
+        semantic_engine: Optional[SemanticEngine] = None,
+        bk_tree: Optional[object] = None,
+        config: Optional[Dict[str, Any]] = None,
+    ):
         """
         plugin_registry: optional plugin registry; must implement run_reasoning(input)->List[ReasoningResult]
         semantic_engine: optional SemanticEngine instance
@@ -271,16 +327,24 @@ class ReasonerPipeline:
         self.rules = RuleChecker()
         self.typo = TypoSuggester(bk_tree=bk_tree)
         self.heuristics = HeuristicPredictor()
-        self.semantic = SemanticBridge(semantic_engine, self.rules, min_confidence=(config or {}).get("semantic_min_confidence", 0.8))
+        self.semantic = SemanticBridge(
+            semantic_engine,
+            self.rules,
+            min_confidence=(config or {}).get("semantic_min_confidence", 0.8),
+        )
         # plugin hooks: simple callables that accept input and return List[ReasoningResult]
         self.pre_hooks: List[Callable[[str], List[ReasoningResult]]] = []
-        self.post_hooks: List[Callable[[str, List[ReasoningResult]], List[ReasoningResult]]] = []
+        self.post_hooks: List[
+            Callable[[str, List[ReasoningResult]], List[ReasoningResult]]
+        ] = []
 
     # optional plugin hook registration helpers
     def register_pre_hook(self, fn: Callable[[str], List[ReasoningResult]]):
         self.pre_hooks.append(fn)
 
-    def register_post_hook(self, fn: Callable[[str, List[ReasoningResult]], List[ReasoningResult]]):
+    def register_post_hook(
+        self, fn: Callable[[str, List[ReasoningResult]], List[ReasoningResult]]
+    ):
         self.post_hooks.append(fn)
 
     def analyze_input(self, input_text: str) -> Dict[str, List[ReasoningResult]]:
@@ -301,7 +365,7 @@ class ReasonerPipeline:
             "suggestions": [],
             "semantic": [],
             "plugin": [],
-            "info": []
+            "info": [],
         }
 
         # early plugin hooks (allow plugin to short-circuit or add annotations)
@@ -390,4 +454,3 @@ class ReasonerPipeline:
 
         results["meta"] = {"took_s": round(time.time() - now, 4)}
         return results
-

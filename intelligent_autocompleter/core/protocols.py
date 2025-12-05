@@ -10,10 +10,21 @@ Import-safe and usable on Python 3.10 without typing_extensions.
 
 from __future__ import annotations
 
-from typing import Protocol, Iterable, List, Tuple, Dict, Any, Optional, runtime_checkable, TypedDict
+from typing import (
+    Protocol,
+    Iterable,
+    List,
+    Tuple,
+    Dict,
+    Any,
+    Optional,
+    runtime_checkable,
+    TypedDict,
+)
 
 
 # --- Typed structures used across components ------------------------------------
+
 
 class NormalizedFeatureMap(TypedDict, total=False):
     """
@@ -25,6 +36,7 @@ class NormalizedFeatureMap(TypedDict, total=False):
         ...
       }
     """
+
     markov: float
     embed: float
     personal: float
@@ -38,12 +50,12 @@ NormalizedMaps = Dict[str, NormalizedFeatureMap]  # mapping: token -> per-featur
 
 # Protocols ------------------------------------------------------------------
 
+
 @runtime_checkable
 class MarkovProtocol(Protocol):
     """Minimal interface for Markov predictor used by HybridPredictor."""
 
-    def train_sentence(self, s: str) -> None:
-        ...
+    def train_sentence(self, s: str) -> None: ...
 
     def top_next(self, prev: str, topn: int = 5) -> List[Tuple[str, int]]:
         """
@@ -56,8 +68,7 @@ class MarkovProtocol(Protocol):
 class BKTreeProtocol(Protocol):
     """Interface for a BK-Tree used to provide fuzzy matches."""
 
-    def insert(self, token: str) -> None:
-        ...
+    def insert(self, token: str) -> None: ...
 
     def query(self, token: str, max_dist: int = 2) -> List[Tuple[str, int]]:
         """
@@ -92,12 +103,14 @@ class SemanticEngineProtocol(Protocol):
 class FeaturePreprocessorProtocol(Protocol):
     """Normalizes raw feature maps into normalized per-word feature dicts."""
 
-    def normalize_all(self,
-                      markov: Dict[str, float],
-                      embed: Dict[str, float],
-                      fuzzy: Dict[str, int],
-                      freq: Dict[str, float],
-                      recency: Dict[str, float]) -> NormalizedMaps:
+    def normalize_all(
+        self,
+        markov: Dict[str, float],
+        embed: Dict[str, float],
+        fuzzy: Dict[str, int],
+        freq: Dict[str, float],
+        recency: Dict[str, float],
+    ) -> NormalizedMaps:
         """
         Convert raw scores to normalized feature values.
 
@@ -110,11 +123,13 @@ class FeaturePreprocessorProtocol(Protocol):
 class ReinforcementProtocol(Protocol):
     """Interface for the reinforcement/feedback component."""
 
-    def record_accept(self, context: str, suggestion: str, source: Optional[str] = None) -> None:
-        ...
+    def record_accept(
+        self, context: str, suggestion: str, source: Optional[str] = None
+    ) -> None: ...
 
-    def record_reject(self, context: str, suggestion: str, source: Optional[str] = None) -> None:
-        ...
+    def record_reject(
+        self, context: str, suggestion: str, source: Optional[str] = None
+    ) -> None: ...
 
     def get_weights(self) -> Dict[str, float]:
         """
@@ -137,11 +152,11 @@ class PersonalizerProtocol(Protocol):
      - lower-level: adjust_map(m: Dict[token,float], source: str) -> Dict[token,float]
     """
 
-    def bias_words(self, ranked: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
-        ...
+    def bias_words(
+        self, ranked: List[Tuple[str, float]]
+    ) -> List[Tuple[str, float]]: ...
 
-    def adjust_map(self, m: Dict[str, float], source: str) -> Dict[str, float]:
-        ...
+    def adjust_map(self, m: Dict[str, float], source: str) -> Dict[str, float]: ...
 
 
 @runtime_checkable
@@ -154,27 +169,32 @@ class FusionRankerProtocol(Protocol):
       - rank_normalized(normalized_maps, weights, personalizer, topn) for hot-path
     """
 
-    def rank(self,
-             markov: List[Tuple[str, float]],
-             embeddings: List[Tuple[str, float]],
-             fuzzy: List[Tuple[str, int]],
-             base_freq: Dict[str, float],
-             recency_map: Dict[str, float],
-             topn: int = 10) -> List[Tuple[str, float]]:
-        ...
+    def rank(
+        self,
+        markov: List[Tuple[str, float]],
+        embeddings: List[Tuple[str, float]],
+        fuzzy: List[Tuple[str, int]],
+        base_freq: Dict[str, float],
+        recency_map: Dict[str, float],
+        topn: int = 10,
+    ) -> List[Tuple[str, float]]: ...
 
-    def rank_normalized(self,
-                        normalized_maps: NormalizedMaps,
-                        weights: Dict[str, float],
-                        personalizer: Optional[PersonalizerProtocol] = None,
-                        topn: int = 10) -> List[Tuple[str, float]]:
+    def rank_normalized(
+        self,
+        normalized_maps: NormalizedMaps,
+        weights: Dict[str, float],
+        personalizer: Optional[PersonalizerProtocol] = None,
+        topn: int = 10,
+    ) -> List[Tuple[str, float]]:
         """
         Rank using normalized per-token feature maps for speed.
         Returns list[(token, score)] sorted desc by score.
         """
         ...
 
-    def debug_contributions(self, token: str, normalized_maps: NormalizedMaps, weights: Dict[str, float]) -> Dict[str, float]:
+    def debug_contributions(
+        self, token: str, normalized_maps: NormalizedMaps, weights: Dict[str, float]
+    ) -> Dict[str, float]:
         """
         Return per-feature contribution for `token` for explainability/diagnostics.
         """
@@ -185,20 +205,18 @@ class FusionRankerProtocol(Protocol):
 class PluginRegistryProtocol(Protocol):
     """Plugin registry hooks used by HybridPredictor and the CLI/TUI."""
 
-    def call_train(self, lines: Iterable[str]) -> None:
-        ...
+    def call_train(self, lines: Iterable[str]) -> None: ...
 
-    def call_retrain(self, sentence: str) -> None:
-        ...
+    def call_retrain(self, sentence: str) -> None: ...
 
-    def run_suggest_pipeline(self, last_token: str, ranked: List[Tuple[str, float]], bundle: Dict[str, Any]) -> List[Tuple[str, float]]:
+    def run_suggest_pipeline(
+        self, last_token: str, ranked: List[Tuple[str, float]], bundle: Dict[str, Any]
+    ) -> List[Tuple[str, float]]:
         """
         Plugins may mutate the scored list or return a new scored list. Keep the return deterministic.
         """
         ...
 
-    def call_accept(self, w: str, meta: Dict[str, Any]) -> None:
-        ...
+    def call_accept(self, w: str, meta: Dict[str, Any]) -> None: ...
 
-    def call_reject(self, w: str, meta: Dict[str, Any]) -> None:
-        ...
+    def call_reject(self, w: str, meta: Dict[str, Any]) -> None: ...

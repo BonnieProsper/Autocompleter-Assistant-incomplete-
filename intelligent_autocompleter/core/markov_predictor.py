@@ -12,15 +12,18 @@ Word = str
 Score = float
 NextList = List[Tuple[Word, Score]]
 
+
 @dataclass(frozen=True)
 class MarkovConfig:
     """
     Configurable knobs for smoothing, tokenisation, and top-k behaviour.
     """
+
     topn: int = 5
     min_token_len: int = 1
     smoothing_k: float = 0.5  # laplace smoothing constant
     lowercase: bool = True
+
 
 class MarkovPredictor:
     """
@@ -31,11 +34,11 @@ class MarkovPredictor:
       - serialization helpers
       - public API
 
-    MarkovPredictor produces probabilistic scores not raw counts, 
+    MarkovPredictor produces probabilistic scores not raw counts,
     making it a better resource for FusionRanker.
     """
 
-    _token_re = re.compile(r"[A-Za-z0-9']+")   # improved tokenizer (keeps contractions)
+    _token_re = re.compile(r"[A-Za-z0-9']+")  # improved tokenizer (keeps contractions)
 
     def __init__(self, config: Optional[MarkovConfig] = None) -> None:
         self.cfg = config or MarkovConfig()
@@ -89,10 +92,7 @@ class MarkovPredictor:
         total = sum(counter.values())
         denom = total + k * vocab_size
 
-        return {
-            w: (c + k) / denom
-            for w, c in counter.items()
-        }
+        return {w: (c + k) / denom for w, c in counter.items()}
 
     # ------------------------------------------------------------------
     # Prediction (public API)
@@ -121,10 +121,7 @@ class MarkovPredictor:
         if not self._uni:
             return []
         total = sum(self._uni.values())
-        return [
-            (w, c / total)
-            for w, c in self._uni.most_common(n)
-        ]
+        return [(w, c / total) for w, c in self._uni.most_common(n)]
 
     # ------------------------------------------------------------------
     # Introspection helpers
@@ -146,7 +143,9 @@ class MarkovPredictor:
     def load_state(self, data: dict) -> None:
         try:
             chain = data.get("chain", {})
-            self._chain = defaultdict(Counter, {k: Counter(v) for k, v in chain.items()})
+            self._chain = defaultdict(
+                Counter, {k: Counter(v) for k, v in chain.items()}
+            )
             self._uni = Counter(data.get("uni", {}))
             self._total = int(data.get("total", 0))
         except Exception:

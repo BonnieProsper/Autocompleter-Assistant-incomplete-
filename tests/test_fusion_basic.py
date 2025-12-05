@@ -1,6 +1,7 @@
 # tests/test_fusion_basic.py
 from intelligent_autocompleter.core.fusion_ranker import FusionRanker
 
+
 def test_fusion_basic():
     r = FusionRanker("strict")
     # markov strongly favors 'run' over others

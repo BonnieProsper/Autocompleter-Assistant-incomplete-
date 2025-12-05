@@ -16,9 +16,7 @@ import time
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.widgets import (
-    Header, Footer, Input, Static, DataTable, LoadingIndicator
-)
+from textual.widgets import Header, Footer, Input, Static, DataTable, LoadingIndicator
 from textual.containers import Container, Horizontal
 from textual.reactive import reactive
 from textual import events
@@ -40,6 +38,7 @@ class SuggestionPanel(Static):
      - color-coded confidence scores
      - the predicted word
     """
+
     def update_predictions(self, predictions):
         lines = []
         # placeholder
@@ -47,14 +46,16 @@ class SuggestionPanel(Static):
         if not predictions:
             self.update("[dim]No suggestions[/dim]")
             return
-        
+
         for i, (word, score) in enumerate(predictions[:5], 1):
             # Confidence score colours:
             # > 0.7: High confidence = Green
             # > 0.4: Medium confidence = Cyan
             # Else: Low confidence = Yellow
             color = "green" if score > 0.7 else "cyan" if score > 0.4 else "yellow"
-            lines.append(f"[b]{i}[/b] • [{color}]{word}[/{color}]  [dim]{score:.3f}[/dim]")
+            lines.append(
+                f"[b]{i}[/b] • [{color}]{word}[/{color}]  [dim]{score:.3f}[/dim]"
+            )
         self.update("\n".join(lines))
 
 
@@ -63,6 +64,7 @@ class ContextView(Static):
     Shows what the local learner (CtxPersonal) has learnt,
     which helps the user understand how their choices shape future predictions.
     """
+
     def update_context(self, context: CtxPersonal):
         if not context.freq:
             self.update("[dim]No learned tokens yet[/dim]")
@@ -77,14 +79,16 @@ class TypingLatency(Static):
     """
     Bottom-left readout showing how long the last prediction took.
     """
+
     def set_latency(self, seconds: float):
         ms = round(seconds * 1000)
         self.update(f"[dim]Latency:[/dim] {ms}ms")
 
+
 # Main Application -----------------------------------------------------------------
 class TUIAutocompleter(App):
     """
-    The main Textual app. 
+    The main Textual app.
     Manages:
      - user input
      - prediction updates
@@ -95,8 +99,9 @@ class TUIAutocompleter(App):
      - prediction engine to reactive state
      - reactive state to UI updates
     """
+
     CSS_PATH = "tui_style.css"
-  
+
     # keyboard shortcuts for user
     BINDINGS = [
         ("tab", "accept_top", "Accept Top Suggestion"),
@@ -105,9 +110,9 @@ class TUIAutocompleter(App):
     ]
 
     # reactive values that automatically refresh widgets when changed
-    user_text = reactive("") # whats currently in input box
-    suggestions = reactive([]) # most recent prediction results
-    latency = reactive(0.0) # measured model inference time
+    user_text = reactive("")  # whats currently in input box
+    suggestions = reactive([])  # most recent prediction results
+    latency = reactive(0.0)  # measured model inference time
 
     def __init__(self):
         super().__init__()
@@ -118,7 +123,7 @@ class TUIAutocompleter(App):
     # UI --------------------------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(): # Main split view
+        with Horizontal():  # Main split view
             with Container(id="left"):
                 yield Input(placeholder="Start typing…", id="text_input")
                 yield ContextView(id="context")
@@ -133,7 +138,7 @@ class TUIAutocompleter(App):
 
     # Handle typing: Input has changed so update predictions
     async def on_input_changed(self, event: Input.Changed) -> None:
-        """ Re- run suggestion logic everytime user types."""
+        """Re- run suggestion logic everytime user types."""
         fragment = event.value
         self.user_text = fragment
 
@@ -212,12 +217,14 @@ class TUIAutocompleter(App):
             f.write(self.user_text)
         with open(MODEL_PATH, "wb") as f:
             import pickle
+
             pickle.dump(self.hp, f)
 
     def load_state(self):
         """Load previously saved text and model if available, using path initialised above."""
         if MODEL_PATH.exists():
             import pickle
+
             self.hp = pickle.load(open(MODEL_PATH, "rb"))
         if SESSION_PATH.exists():
             self.user_text = SESSION_PATH.read_text(encoding="utf8")
@@ -230,4 +237,3 @@ class TUIAutocompleter(App):
 
 if __name__ == "__main__":
     TUIAutocompleter().run()
-

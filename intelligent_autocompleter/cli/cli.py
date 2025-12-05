@@ -55,24 +55,26 @@ MODEL_PATH = os.path.join(DATA_DIR, "model_state.pkl")
 SESSION_PATH = os.path.join(DATA_DIR, "session_state.json")
 PLUGIN_CONFIG = os.path.join(DATA_DIR, "plugins_config.json")
 
+
 class CLI:
     """Command-line interface (CLI) class to manage user interaction, autocompletion, and session persistence."""
+
     def __init__(self):
         """
         Initialize the CLI assistant:
         - Loads the HybridPredictor model
-        - Sets up context (user-specific data) 
+        - Sets up context (user-specific data)
         - Initializes metrics tracking
-        - Loads previous session data 
+        - Loads previous session data
         """
         self.registry = PluginRegistry()
         self.hp = HybridPredictor(registry=self.registry)
         self.learner = ReinforcementLearner()
-        
+
         self.context = CtxPersonal()
         self.metrics = Metrics()
         self.cfg = Config()
-        
+
         self.session_data = []
         self.running = True
         self.show_feedback_logs = False  # toggleable
@@ -88,7 +90,9 @@ class CLI:
         - Processes user input with autocompletion suggestions.
         """
         console.rule("[bold magenta]Intelligent Autocompleter[/bold magenta]")
-        console.print("[cyan]Type sentences with live suggestions. Use #comment for notes.[/cyan]")
+        console.print(
+            "[cyan]Type sentences with live suggestions. Use #comment for notes.[/cyan]"
+        )
         console.print("Commands: /quit /weights /plugins /context /feedback /reset\n")
 
         # run loop as long as CLI is running
@@ -96,7 +100,7 @@ class CLI:
             try:
                 # prompt user for input (suggestions shown as they type)
                 fragment = Prompt.ask("[green]You[/green]", default="")
-                if not fragment: # if no input continue to next iteration
+                if not fragment:  # if no input continue to next iteration
                     continue
 
                 # handle commands
@@ -151,13 +155,15 @@ class CLI:
         Prediction → display → user choice → apply → adaptive learning → feedback tracking
         """
         t0 = time.perf_counter()
-        suggestions = self.hp.suggest(fragment) # get suggestions from HybridPredictor
-        self.metrics.record("suggest_time", time.perf_counter() - t0) # record time for stats
+        suggestions = self.hp.suggest(fragment)  # get suggestions from HybridPredictor
+        self.metrics.record(
+            "suggest_time", time.perf_counter() - t0
+        )  # record time for stats
 
         tokens = [t for t in fragment.strip().split() if t]
         if tokens:
             self.hp._learner.add_token(tokens[-1])
-            
+
         if not suggestions:
             console.print("[dim](no suggestions)[/dim]")
             return
@@ -170,7 +176,7 @@ class CLI:
 
         # accept suggestion using corresponding number
         if chosen.isdigit() and 1 <= int(chosen) <= len(suggestions):
-            word, score, source = suggestions[int(chosen)-1]
+            word, score, source = suggestions[int(chosen) - 1]
             console.print(f"[green]Accepted:[/green] {word}  [dim]({source})[/dim]")
 
             self.hp.accept(word)
@@ -207,12 +213,7 @@ class CLI:
 
         for i, (w, score, src) in enumerate(suggestions[:5], 1):
             style = self._color_for_word(w)
-            table.add_row(
-                str(i),
-                Text(w, style=style),
-                f"{score:.3f}",
-                src
-            )
+            table.add_row(str(i), Text(w, style=style), f"{score:.3f}", src)
         console.print(table)
 
     def _color_for_word(self, word: str) -> str:
@@ -242,13 +243,12 @@ class CLI:
         self.session_data.append({"comment": note})
         self._autosave()
 
-
     # COMMAND: WEIGHTS/PLUGINS/CONTEXT/FEEDBACK --------------------------------------
     def _show_weights(self):
         panel = Panel(
             json.dumps(self.hp.get_weights(), indent=2),
             title="Current Weights",
-            border_style="cyan"
+            border_style="cyan",
         )
         console.print(panel)
 
@@ -274,7 +274,9 @@ class CLI:
         console.print(table)
 
     def _show_context(self):
-        freq_sorted = sorted(self.context.freq.items(), key=lambda kv: kv[1], reverse=True)
+        freq_sorted = sorted(
+            self.context.freq.items(), key=lambda kv: kv[1], reverse=True
+        )
         table = Table(title="Personal Vocabulary", box=box.MINIMAL)
         table.add_column("Word")
         table.add_column("Freq")
@@ -287,9 +289,7 @@ class CLI:
     def _show_feedback_log(self):
         logs = self.feedback.dump()
         panel = Panel(
-            json.dumps(logs, indent=2),
-            title="Feedback Log",
-            border_style="yellow"
+            json.dumps(logs, indent=2), title="Feedback Log", border_style="yellow"
         )
         console.print(panel)
 
@@ -367,11 +367,12 @@ class CLI:
         self._save_state()
         self.running = False
 
-
     def _session_summary(self):
         total_inputs = len([x for x in self.session_data if "input" in x])
         total_comments = len([x for x in self.session_data if "comment" in x])
-        top_words = sorted(self.context.freq.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        top_words = sorted(
+            self.context.freq.items(), key=lambda kv: kv[1], reverse=True
+        )[:5]
         t = Table(title="Session Summary", box=box.MINIMAL)
         t.add_column("Metric", style="cyan")
         t.add_column("Value", style="white")
@@ -383,4 +384,3 @@ class CLI:
 
 if __name__ == "__main__":
     CLI().run()
-

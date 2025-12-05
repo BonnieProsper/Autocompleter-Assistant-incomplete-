@@ -12,6 +12,7 @@ try:
 except Exception:
     CtxPersonal = None  # if missing fallback so pipeline still works
 
+
 class ContextPipeline:
     """
     Small pipeline object:

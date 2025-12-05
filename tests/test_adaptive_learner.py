@@ -1,6 +1,7 @@
 def test_adaptive_basic(tmp_path):
     p = tmp_path / "profile.json"
     from intelligent_autocompleter.core.adaptive_learner import AdaptiveLearner
+
     a = AdaptiveLearner(str(p))
     w0 = a.get_weights()
     a.reward("semantic", 0.1)

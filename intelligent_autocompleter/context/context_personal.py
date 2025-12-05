@@ -22,6 +22,7 @@ from logger_utils import Log
 # Lazy spaCy loader
 NLP = None
 
+
 def _ensure_spacy():
     global NLP
     if NLP is not None:
@@ -29,12 +30,14 @@ def _ensure_spacy():
 
     try:
         import spacy
+
         NLP = spacy.load("en_core_web_sm", disable=["ner"])
         Log.write("[CtxPersonal] spaCy loaded successfully.")
     except Exception:
         NLP = None
         Log.write("[CtxPersonal] spaCy unavailable; POS + semantic disabled.")
     return NLP
+
 
 # Storage paths
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "userdata")
@@ -115,7 +118,9 @@ class CtxPersonal:
 
         Log.write(f"[CtxPersonal] Applied decay factor={factor:.2f}")
 
-    def bias_words(self, suggestions: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
+    def bias_words(
+        self, suggestions: List[Tuple[str, float]]
+    ) -> List[Tuple[str, float]]:
         """
         Re-rank suggestions using personal preference statistics.
 

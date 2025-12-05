@@ -1,5 +1,6 @@
 # plugins/example_plugin.py
 
+
 def register(registry):
     """
     Plugins define one public function: register(registry)

@@ -12,13 +12,15 @@ os.makedirs(LOG_DIR, exist_ok=True)  # Create the folder if it doesn’t already
 DEFAULT_LOG_PATH = os.path.join(LOG_DIR, "autocompleter.log")
 MAX_LOG_SIZE = 1_000_000  # 1 MB per file before rotation
 
+
 class Log:
     """Lightweight logger for writing messages and tracking metrics."""
+
     COLORS = {
-        "DEBUG": "\033[90m",   # gray
-        "INFO": "\033[94m",    # blue
-        "WARNING": "\033[93m", # yellow
-        "ERROR": "\033[91m",   # red
+        "DEBUG": "\033[90m",  # gray
+        "INFO": "\033[94m",  # blue
+        "WARNING": "\033[93m",  # yellow
+        "ERROR": "\033[91m",  # red
         "RESET": "\033[0m",
     }
 
@@ -36,14 +38,14 @@ class Log:
             with open(self.path, "w", encoding="utf-8") as f:
                 f.write(f"[{ts}] Log rotated → {backup}\n")
 
-    def write(self, level:str, msg:str):
+    def write(self, level: str, msg: str):
         """
         Append a log message to the log file with a timestamp.
         Each entry is written as: [YYYY-MM-DD HH:MM:SS] message
         """
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{ts}] {level:<7} | {msg}"
-        
+
         # append to log file
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -66,7 +68,7 @@ class Log:
 
     def error(self, msg: str):
         self._write("ERROR", msg)
-    
+
     @staticmethod
     def metric(tag, value, unit=""):
         """
@@ -94,6 +96,7 @@ class Log:
 
 class _Timer:
     """Context manager used internally to measure time for a code block."""
+
     def __init__(self, label):
         self.label = label
         self.start = time.time()  # record the start time when the block begins
@@ -103,8 +106,6 @@ class _Timer:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        """When exiting the 'with' block, calculate how long it took and record it as a metric. """
+        """When exiting the 'with' block, calculate how long it took and record it as a metric."""
         dur = round(time.time() - self.start, 3)  # duration in seconds (rounded)
         Log.metric(f"{self.label} done", dur, "s")
-
-

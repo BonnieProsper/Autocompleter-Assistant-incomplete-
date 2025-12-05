@@ -26,9 +26,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 # Core types used in plugin system
-Candidate = Tuple[str, float]                # (word, score)
-Candidate3 = Tuple[str, float, str]           # (word, score, source label)
-Bundle = Dict[str, Any]                    # arbitrary metadata passed through pipeline
+Candidate = Tuple[str, float]  # (word, score)
+Candidate3 = Tuple[str, float, str]  # (word, score, source label)
+Bundle = Dict[str, Any]  # arbitrary metadata passed through pipeline
+
 
 class PluginBase:
     """
@@ -39,6 +40,7 @@ class PluginBase:
         version: plugin version for debugging or compatibility checks
         cfg: runtime configuration passed from config.json or registry.apply_config()
     """
+
     name: str = "plugin_base"
     version: str = "0.0"
 
@@ -65,10 +67,7 @@ class PluginBase:
 
     # Main pipeline hook ----------------------------------------------
     def on_suggest(
-        self,
-        fragment: str,
-        candidates: List[Candidate],
-        bundle: Bundle
+        self, fragment: str, candidates: List[Candidate], bundle: Bundle
     ) -> Optional[List]:
         """
         Modify or extend the candidate list.
@@ -103,4 +102,3 @@ class PluginBase:
     def shutdown(self) -> None:
         """Called when the host application is shutting down."""
         return None
-

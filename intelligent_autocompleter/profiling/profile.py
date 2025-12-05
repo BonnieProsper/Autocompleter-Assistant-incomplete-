@@ -8,12 +8,14 @@ import time
 from pathlib import Path
 from intelligent_autocompleter.core.hybrid_predictor import HybridPredictor
 
+
 def bench(predictor, fragment="hello", runs=1000):
     t0 = time.time()
     for _ in range(runs):
         predictor.suggest(fragment, topn=5)
     dur = time.time() - t0
     return dur / runs
+
 
 def main():
     hp = HybridPredictor()
@@ -23,6 +25,7 @@ def main():
     print("Warmup done")
     avg = bench(hp, "hello", runs=500)
     print(f"avg latency/suggest: {avg:.6f}s")
+
 
 if __name__ == "__main__":
     main()

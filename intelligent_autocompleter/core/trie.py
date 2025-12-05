@@ -11,6 +11,7 @@ Word = str
 Score = int
 Candidate = Tuple[Word, Score]
 
+
 class TrieNode:
     """
     A singlenode in the Trie.
@@ -18,12 +19,14 @@ class TrieNode:
     is_word: bool marker to know if this path forms a real word
     freq: counts how often user/system inserted this word
     """
+
     __slots__ = ("children", "is_word", "freq")
 
     def __init__(self) -> None:
         self.children: Dict[str, TrieNode] = defaultdict(TrieNode)
         self.is_word = False
         self.freq = 0
+
 
 class Trie:
     """
@@ -32,6 +35,7 @@ class Trie:
      - fast fallback when ML models fail
      - collecting popularity-weighted completions
     """
+
     def __init__(self) -> None:
         self._root = TrieNode()
 
@@ -77,11 +81,7 @@ class Trie:
 
     # internal recursive collector ---------------------------------------------------------
     def _collect(
-        self,
-        node: TrieNode,
-        prefix: str,
-        results: List[Candidate],
-        limit: int
+        self, node: TrieNode, prefix: str, results: List[Candidate], limit: int
     ) -> None:
         """DFS collecting words under a prefix node."""
         if node.is_word:
@@ -111,4 +111,3 @@ class Trie:
             if node is None:
                 return False
         return node.is_word
-

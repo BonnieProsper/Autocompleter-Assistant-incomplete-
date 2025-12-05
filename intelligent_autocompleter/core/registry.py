@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional, Any
 from intelligent_autocompleter.core.reasoner import ReasoningResult
 
+
 class CommandRegistry:
     """
     Unified plugin/command registry for the Autocompleter Assistant.
@@ -19,6 +20,7 @@ class CommandRegistry:
     The registry ensures consistent behavior and isolates failures
     in plugin-provided logic.
     """
+
     def __init__(self):
         # command_name -> handler function
         self.commands: Dict[str, Callable[..., Any]] = {}
@@ -32,7 +34,6 @@ class CommandRegistry:
         # reasoning plugins -> callable(str) -> ReasoningResult | List[ReasoningResult] | None
         self.reasoning_plugins: List[Callable[[str], Any]] = []
 
-
     # COMMANDS ----------------------------------------------------------------
     def add_command(self, name: str, handler: Callable[..., Any]) -> None:
         """
@@ -42,7 +43,9 @@ class CommandRegistry:
         self.commands[name] = handler
 
     # AUTOCOMPLETE PROVIDERS ------------------------------------------------------
-    def add_autocomplete(self, command_name: str, provider: Callable[[str], List[str]]) -> None:
+    def add_autocomplete(
+        self, command_name: str, provider: Callable[[str], List[str]]
+    ) -> None:
         """
         Registers an autocomplete provider for a command.
         Multiple providers can exist for the same command.
@@ -65,7 +68,9 @@ class CommandRegistry:
         return results
 
     # VALIDATORS -----------------------------------------------------------------------
-    def add_validator(self, command_name: str, validator: Callable[[str], Optional[str]]) -> None:
+    def add_validator(
+        self, command_name: str, validator: Callable[[str], Optional[str]]
+    ) -> None:
         """
         Adds a validator for a command.
         Validator should return:
@@ -127,4 +132,3 @@ class CommandRegistry:
     def list_plugins(self) -> List[str]:
         """Return a list of registered plugin callables for debugging."""
         return [p.__name__ for p in self.reasoning_plugins]
-

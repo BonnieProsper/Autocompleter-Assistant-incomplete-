@@ -10,6 +10,7 @@ from typing import List, Optional
 import random
 import re
 
+
 class ContextPredictor:
     """
     Model using unigram and bigram frequencies.

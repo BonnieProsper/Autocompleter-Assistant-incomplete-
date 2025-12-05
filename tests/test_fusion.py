@@ -2,17 +2,21 @@
 import pytest
 from intelligent_autocompleter.core.fusion_ranker import FusionRanker
 
+
 def mk_cands():
     # markov: apple strongest, apricot second, banana weak
     return [("apple", 10), ("apricot", 6), ("banana", 2), ("avocado", 4)]
+
 
 def emb_cands():
     # embeddings: avocado is semantically close, banana also okay
     return [("avocado", 0.9), ("banana", 0.6), ("apricot", 0.3)]
 
+
 def fuzzy_cands():
     # fuzzy returns distance, smaller is better
     return [("apricot", 1), ("apple", 2)]
+
 
 def test_fusion_basic_strict():
     r = FusionRanker(preset="strict")
@@ -20,6 +24,7 @@ def test_fusion_basic_strict():
     words = [w for w, _ in out]
     assert words[0] == "apple"
     assert "apricot" in words
+
 
 def test_fusion_personal_boost():
     class DummyPersonal:
@@ -30,12 +35,18 @@ def test_fusion_personal_boost():
             return out
 
     r = FusionRanker(preset="personal", personalizer=DummyPersonal())
-    out = r.rank(markov=mk_cands(), embeddings=emb_cands(), fuzzy=fuzzy_cands(), base_freq={}, topn=3)
+    out = r.rank(
+        markov=mk_cands(),
+        embeddings=emb_cands(),
+        fuzzy=fuzzy_cands(),
+        base_freq={},
+        topn=3,
+    )
     words = [w for w, _ in out]
     assert words[0] == "banana"
+
 
 def test_fusion_empty():
     r = FusionRanker()
     assert r.rank([], [], [], {}) == []
     assert r.rank(None, None, None, None) == []
-

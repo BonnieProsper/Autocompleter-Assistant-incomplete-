@@ -37,6 +37,7 @@ DATA_PATH = os.path.join(ROOT, "data", "demo_corpus.txt")
 OUT_DIR = os.path.join(HERE, "results")
 os.makedirs(OUT_DIR, exist_ok=True)
 
+
 # Utilities / metrics
 # -----------------------
 def load_corpus(path: str) -> List[str]:
@@ -64,7 +65,9 @@ def build_pairs(lines: List[str]) -> List[Tuple[str, str]]:
     return pairs
 
 
-def train_test_split(pairs: List[Tuple[str, str]], test_frac: float = 0.2, seed: int = 42):
+def train_test_split(
+    pairs: List[Tuple[str, str]], test_frac: float = 0.2, seed: int = 42
+):
     random.seed(seed)
     random.shuffle(pairs)
     ntest = max(1, int(len(pairs) * test_frac))
@@ -91,7 +94,7 @@ def reciprocal_rank(preds: List[str], gold: str) -> float:
 # Small experiment runner
 # -----------------------
 def evaluate_presets(
-    hp_ctor,            # callable that returns a fresh HybridPredictor instance
+    hp_ctor,  # callable that returns a fresh HybridPredictor instance
     presets: List[str],
     train_pairs: List[Tuple[str, str]],
     test_pairs: List[Tuple[str, str]],
@@ -110,7 +113,7 @@ def evaluate_presets(
         hp = hp_ctor()
         # train with sentence-level training,  reconstruct sentences from train_pairs
         # simpler: collect sentences from pairs grouping by first token to naive
-        # HybridPredictor has train(lines) so original lines are needed. 
+        # HybridPredictor has train(lines) so original lines are needed.
         # Train hp by calling retrain on the joined pairs to crude but works for simplicity.
         for a, b in train_pairs:
             # feed as small sentence 'a b' to learn Markov counts
@@ -123,8 +126,10 @@ def evaluate_presets(
             if hasattr(hp, "ranker"):
                 hp.ranker.update_preset(preset)
             else:
-                # try to create one and attach 
-                hp.ranker = FusionRanker(preset=preset, personalizer=hp.ctx if hasattr(hp, "ctx") else None)
+                # try to create one and attach
+                hp.ranker = FusionRanker(
+                    preset=preset, personalizer=hp.ctx if hasattr(hp, "ctx") else None
+                )
         except Exception as e:
             Log.write(f"[warn] could not configure preset {preset}: {e}")
 
@@ -172,7 +177,9 @@ def write_report(results: Dict[str, Dict], outdir: str):
         if not stats:
             md.append(f"| {p} | - | - | - | - | - |")
             continue
-        md.append(f"| {p} | {stats['n']} | {stats.get('P@1', '-')} | {stats.get('P@3', '-')} | {stats.get('P@5', '-')} | {stats.get('mrr', '-')} |")
+        md.append(
+            f"| {p} | {stats['n']} | {stats.get('P@1', '-')} | {stats.get('P@3', '-')} | {stats.get('P@5', '-')} | {stats.get('mrr', '-')} |"
+        )
     md_text = "\n".join(md)
     md_path = os.path.join(outdir, "fusion_eval.md")
     with open(md_path, "w", encoding="utf8") as fh:
@@ -193,7 +200,9 @@ def main():
         return
 
     if len(lines) < 5:
-        print("Corpus too small for meaningful eval. Add more lines to data/demo_corpus.txt")
+        print(
+            "Corpus too small for meaningful eval. Add more lines to data/demo_corpus.txt"
+        )
         return
 
     pairs = build_pairs(lines)
@@ -202,7 +211,9 @@ def main():
 
     presets = ["strict", "balanced", "creative", "personal"]
     start = time.time()
-    results = evaluate_presets(HybridPredictor, presets, train_pairs, test_pairs, k_list=(1, 3, 5), topn=5)
+    results = evaluate_presets(
+        HybridPredictor, presets, train_pairs, test_pairs, k_list=(1, 3, 5), topn=5
+    )
     duration = time.time() - start
     print(f"[eval] finished in {duration:.2f}s")
 

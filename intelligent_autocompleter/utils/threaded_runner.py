@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Iterable, List, Tuple
 
+
 def run_parallel(tasks: Iterable[Callable], max_workers: int = 4) -> List:
     """
     Run callables (no-arg functions) in small thread pool and return results in order of completion.

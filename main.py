@@ -6,6 +6,7 @@ from cli.core.registry import CommandRegistry
 from cli.core.reasoner import CommandReasoner
 from cli.ui.prompts import run_cli_loop
 
+
 def load_plugins(registry: CommandRegistry):
     plugins_dir = os.path.join(os.path.dirname(__file__), "plugins")
 
@@ -25,12 +26,14 @@ def load_plugins(registry: CommandRegistry):
         except Exception as e:
             print(f"Failed to load plugin {fname}: {e}")
 
+
 def main():
     registry = CommandRegistry()
     load_plugins(registry)
     reasoner = CommandReasoner(registry)
 
     run_cli_loop(registry, reasoner)
+
 
 if __name__ == "__main__":
     main()

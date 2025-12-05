@@ -27,13 +27,16 @@ from typing import Dict, List, Optional, Tuple, Any
 try:
     from intelligent_autocompleter.utils.logger_utils import Log
 except Exception:
+
     class Log:
         @staticmethod
         def write(msg: str) -> None:
             print(msg)
+
         @staticmethod
         def metric(*a, **k) -> None:
             pass
+
 
 # Paths
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "userdata")
@@ -54,6 +57,7 @@ REWARD_STEP = 0.03
 PENALTY_STEP = 0.03
 DECAY = 0.995
 MIN_WEIGHT = 0.01
+
 
 # Dataclasses
 @dataclass
@@ -106,7 +110,9 @@ class FeedbackStore:
                         self._accept_counts[sug] += 1
                     else:
                         self._reject_counts[sug] += 1
-            Log.write(f"[FeedbackStore] loaded counters (accepted={sum(self._accept_counts.values())})")
+            Log.write(
+                f"[FeedbackStore] loaded counters (accepted={sum(self._accept_counts.values())})"
+            )
         except Exception as e:
             Log.write(f"[FeedbackStore] load failed: {e}")
 
@@ -122,7 +128,9 @@ class FeedbackStore:
             if len(self._buffer) >= (self._buffer.maxlen // 2):
                 self.save()
 
-    def record_accept(self, context: str, suggestion: str, source: Optional[str] = None) -> None:
+    def record_accept(
+        self, context: str, suggestion: str, source: Optional[str] = None
+    ) -> None:
         ev = FeedbackEvent(
             timestamp=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             context=context or "",
@@ -132,7 +140,9 @@ class FeedbackStore:
         )
         self.push(ev)
 
-    def record_reject(self, context: str, suggestion: str, source: Optional[str] = None) -> None:
+    def record_reject(
+        self, context: str, suggestion: str, source: Optional[str] = None
+    ) -> None:
         ev = FeedbackEvent(
             timestamp=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             context=context or "",
@@ -167,7 +177,7 @@ class FeedbackStore:
             try:
                 if os.path.exists(self.path):
                     with open(self.path, "r", encoding="utf-8") as fh:
-                        tail = fh.readlines()[-min(n, 200):]
+                        tail = fh.readlines()[-min(n, 200) :]
                     for ln in tail:
                         out.append({"raw": ln.strip()})
             except Exception:
@@ -180,9 +190,20 @@ class FeedbackStore:
             if not self._buffer:
                 return
             try:
-                write_header = not os.path.exists(self.path) or os.stat(self.path).st_size == 0
+                write_header = (
+                    not os.path.exists(self.path) or os.stat(self.path).st_size == 0
+                )
                 with open(self.path, "a", newline="", encoding="utf-8") as fh:
-                    writer = csv.DictWriter(fh, fieldnames=["timestamp", "context", "suggestion", "accepted", "source"])
+                    writer = csv.DictWriter(
+                        fh,
+                        fieldnames=[
+                            "timestamp",
+                            "context",
+                            "suggestion",
+                            "accepted",
+                            "source",
+                        ],
+                    )
                     if write_header:
                         writer.writeheader()
                     while self._buffer:
@@ -240,8 +261,15 @@ class WeightLearner:
         # Called with lock held
         try:
             # apply slight decay to avoid runaway dominance
-            for k in ("semantic_weight", "markov_weight", "personal_weight", "plugin_weight"):
-                self._profile[k] = max(MIN_WEIGHT, float(self._profile.get(k, 0.0)) * DECAY)
+            for k in (
+                "semantic_weight",
+                "markov_weight",
+                "personal_weight",
+                "plugin_weight",
+            ):
+                self._profile[k] = max(
+                    MIN_WEIGHT, float(self._profile.get(k, 0.0)) * DECAY
+                )
             tmp_path = self.path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 json.dump(self._profile, fh, indent=2)
@@ -263,7 +291,12 @@ class WeightLearner:
 
     def get_weights(self) -> Dict[str, float]:
         with self._lock:
-            keys = ["semantic_weight", "markov_weight", "personal_weight", "plugin_weight"]
+            keys = [
+                "semantic_weight",
+                "markov_weight",
+                "personal_weight",
+                "plugin_weight",
+            ]
             vals = [max(MIN_WEIGHT, float(self._profile.get(k, 0.0))) for k in keys]
             s = sum(vals) or 1.0
             return {k.replace("_weight", ""): float(v / s) for k, v in zip(keys, vals)}
@@ -273,7 +306,9 @@ class WeightLearner:
             if key not in self._profile:
                 # ignore unknown keys
                 return
-            self._profile[key] = max(MIN_WEIGHT, float(self._profile.get(key, 0.0)) + float(delta))
+            self._profile[key] = max(
+                MIN_WEIGHT, float(self._profile.get(key, 0.0)) + float(delta)
+            )
             self._normalize_profile()
             self._save_locked()
 
@@ -314,7 +349,13 @@ class ReinforcementLearner:
       weights = rl.get_weights()
     """
 
-    def __init__(self, events_path: Optional[str] = None, profile_path: Optional[str] = None, buffer_max: int = 1000, verbose: bool = False):
+    def __init__(
+        self,
+        events_path: Optional[str] = None,
+        profile_path: Optional[str] = None,
+        buffer_max: int = 1000,
+        verbose: bool = False,
+    ):
         self.store = FeedbackStore(path=events_path, buffer_max=buffer_max)
         self.learner = WeightLearner(path=profile_path)
         self.verbose = bool(verbose)
@@ -323,9 +364,13 @@ class ReinforcementLearner:
         self.confirmed: Counter = Counter()
 
     # Recording API
-    def record_accept(self, context: str, suggestion: str, source: Optional[str] = None) -> None:
+    def record_accept(
+        self, context: str, suggestion: str, source: Optional[str] = None
+    ) -> None:
         suggestion = suggestion.lower().strip()
-        self.context_window.extend(w.lower() for w in (context or "").split() if w.isalpha())
+        self.context_window.extend(
+            w.lower() for w in (context or "").split() if w.isalpha()
+        )
         self.confirmed[suggestion] += 1
         self.store.record_accept(context or "", suggestion, source)
         # reward learner by source (normalized mapping)
@@ -341,7 +386,9 @@ class ReinforcementLearner:
         if self.verbose:
             Log.write(f"[ReinforcementLearner] accept '{suggestion}' src={source}")
 
-    def record_reject(self, context: str, suggestion: str, source: Optional[str] = None) -> None:
+    def record_reject(
+        self, context: str, suggestion: str, source: Optional[str] = None
+    ) -> None:
         suggestion = suggestion.lower().strip()
         self.store.record_reject(context or "", suggestion, source)
         try:

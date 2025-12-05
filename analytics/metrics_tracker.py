@@ -1,9 +1,10 @@
-# metrics_tracker.py 
+# metrics_tracker.py
 
 import time
 import json
 import os
 from collections import defaultdict
+
 
 class Metrics:
     def __init__(self, path="metrics.json"):
@@ -34,7 +35,7 @@ class Metrics:
         self.save()
 
     def avg(self, key):
-        if self.n[key] == 0: 
+        if self.n[key] == 0:
             return 0.0
         return self.m[key] / self.n[key]
 
@@ -42,4 +43,3 @@ class Metrics:
         print("metrics:")
         for k in self.m:
             print(f"  {k:15} {self.avg(k):.4f}")
-

@@ -1,6 +1,7 @@
 # intelligent_autocompleter/context/tokenizer.py
 # simple but extendable tokenizer
 
+
 def simple_tokenize(s: str):
     """
     Return list of tokens (words). Only alpha tokens and short tokens kept.

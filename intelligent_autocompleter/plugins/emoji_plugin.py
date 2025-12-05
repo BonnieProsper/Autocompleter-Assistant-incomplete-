@@ -2,6 +2,7 @@
 from .base import PluginBase, Candidate
 from typing import List, Dict, Any
 
+
 class EmojiPlugin(PluginBase):
     name = "emoji"
     version = "0.1"
@@ -16,7 +17,9 @@ class EmojiPlugin(PluginBase):
         "love": "❤️",
     }
 
-    def on_suggest(self, fragment: str, candidates: List[Candidate], bundle: Dict[str, Any]) -> List[Candidate]:
+    def on_suggest(
+        self, fragment: str, candidates: List[Candidate], bundle: Dict[str, Any]
+    ) -> List[Candidate]:
         frag = fragment.lower().strip()
         out = list(candidates)
         for k, e in self.EMOJI_MAP.items():
@@ -24,6 +27,6 @@ class EmojiPlugin(PluginBase):
                 out.append((e, 0.45))
         return out
 
+
 def register(reg):
     reg.register(EmojiPlugin())
-

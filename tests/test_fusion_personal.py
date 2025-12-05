@@ -1,6 +1,7 @@
 # tests/test_fusion_personal.py
 from intelligent_autocompleter.core.fusion_ranker import FusionRanker
 
+
 def test_fusion_personal():
     r = FusionRanker("personal")
     mk = {"alpha": 1.0, "beta": 1.0}
@@ -10,4 +11,3 @@ def test_fusion_personal():
     freq = {"alpha": 1.0, "beta": 1.0}
     out = r.rank(mk, eb, per, freq, topn=2)
     assert out[0][0] == "beta"
-

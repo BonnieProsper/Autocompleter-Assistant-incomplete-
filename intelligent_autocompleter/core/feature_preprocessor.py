@@ -49,9 +49,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Optional numpy acceleration 
+# Optional numpy acceleration
 try:
     import numpy as np  # type: ignore
+
     _NUMPY = True
 except Exception:
     _NUMPY = False
@@ -63,6 +64,7 @@ FeatureVector = Dict[str, Numeric]  # normalized features for a single word
 FeatureMatrix = Dict[str, FeatureVector]  # word -> features
 
 DEFAULT_FEATURE_ORDER = ("markov", "embed", "fuzzy", "freq", "recency")
+
 
 class PreprocessorError(ValueError):
     """Raised when inputs are invalid or inconsistent."""
@@ -104,8 +106,12 @@ class FeaturePreprocessor:
                is not importable).
     """
 
-    def __init__(self, required_features: Optional[Iterable[str]] = None, use_numpy: bool = True):
-        self.feature_order = tuple(required_features) if required_features else DEFAULT_FEATURE_ORDER
+    def __init__(
+        self, required_features: Optional[Iterable[str]] = None, use_numpy: bool = True
+    ):
+        self.feature_order = (
+            tuple(required_features) if required_features else DEFAULT_FEATURE_ORDER
+        )
         self.use_numpy = bool(use_numpy) and _NUMPY
 
     # Transformations
@@ -138,7 +144,9 @@ class FeaturePreprocessor:
 
     def _fuzzy_to_sim(self, distances: Sequence[Numeric]) -> List[float]:
         if self.use_numpy:
-            arr = np.array([float(d) if d is not None else 999.0 for d in distances], dtype=float)
+            arr = np.array(
+                [float(d) if d is not None else 999.0 for d in distances], dtype=float
+            )
             # avoid division by zero, convert distances to similarity
             sims = 1.0 / (1.0 + arr)
             lo = float(sims.min())
@@ -170,7 +178,9 @@ class FeaturePreprocessor:
         keys = set()
         for m in maps:
             if not isinstance(m, Mapping):
-                raise PreprocessorError("Each signal must be a mapping (word -> numeric).")
+                raise PreprocessorError(
+                    "Each signal must be a mapping (word -> numeric)."
+                )
             keys.update(m.keys())
         return sorted(keys)
 
@@ -248,7 +258,9 @@ class FeaturePreprocessor:
         This is what FusionRanker expects if it wants per-candidate
         dictionaries rather than vectorized arrays.
         """
-        keys, feature_names, matrix = self.build_feature_matrix(markov, embed, fuzzy, freq, recency)
+        keys, feature_names, matrix = self.build_feature_matrix(
+            markov, embed, fuzzy, freq, recency
+        )
         out: FeatureMatrix = {}
         for word, row in zip(keys, matrix):
             out[word] = {fname: float(val) for fname, val in zip(feature_names, row)}

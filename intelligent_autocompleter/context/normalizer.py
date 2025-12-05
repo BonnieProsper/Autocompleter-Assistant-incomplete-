@@ -3,6 +3,7 @@ import re
 
 _strip_re = re.compile(r"[^\w\s'-]")  # keep simple punctuation useful for tokens
 
+
 def normalize_text(s: str) -> str:
     if not s:
         return ""
