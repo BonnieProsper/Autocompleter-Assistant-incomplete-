@@ -1,5 +1,3 @@
-# check: put in different folder e.g tools?
-
 # tools/profile_suggest.py
 """
 Small profiling harness for HybridPredictor.suggest.
@@ -10,8 +8,8 @@ Prints mean/median/std latency and basic sample of suggestions.
 """
 import argparse
 import time
-import statistics
 import random
+import statistics
 from statistics import median
 from pathlib import Path
 
