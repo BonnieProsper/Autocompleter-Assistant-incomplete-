@@ -5,6 +5,7 @@ from ..base import PluginBase
 # Candidate type: (suggested_text, score)
 Candidate = Tuple[str, float]
 
+
 class CodeAssist(PluginBase):
     """
     CodeAssist plugin suggests small common code snippets.
@@ -21,7 +22,9 @@ class CodeAssist(PluginBase):
         "try": "try:\n    pass\nexcept Exception as e:\n    print(e)",
     }
 
-    def on_suggest(self, fragment: str, candidates: List[Candidate], bundle: Dict[str, Any]) -> List[Candidate]:
+    def on_suggest(
+        self, fragment: str, candidates: List[Candidate], bundle: Dict[str, Any]
+    ) -> List[Candidate]:
         """
         Suggest a snippet (word,score) list. Plugins should return list[(str,float)].
         """
@@ -30,6 +33,7 @@ class CodeAssist(PluginBase):
         if tok in self.SNIPPETS:
             out.insert(0, (self.SNIPPETS[tok], 0.9))
         return out
+
 
 # helper registration function: optional convenience for plugin loader
 def register(registry):

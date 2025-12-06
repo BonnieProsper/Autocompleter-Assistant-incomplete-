@@ -11,8 +11,14 @@ from typing import Optional, Dict, List, Tuple
 from .registry import PluginRegistry
 from .base import PluginBase
 
+
 class PluginLoader:
-    def __init__(self, path: str, registry: Optional[PluginRegistry] = None, cfg_map: Optional[Dict[str, dict]] = None):
+    def __init__(
+        self,
+        path: str,
+        registry: Optional[PluginRegistry] = None,
+        cfg_map: Optional[Dict[str, dict]] = None,
+    ):
         self.path = os.path.abspath(path)
         self.registry = registry or PluginRegistry()
         self.cfg_map = cfg_map or {}
@@ -36,7 +42,9 @@ class PluginLoader:
         return out
 
     def load_module(self, mod_name: str, path: str):
-        spec = importlib.util.spec_from_file_location(f"intelligent_autocompleter.plugins.{mod_name}", path)
+        spec = importlib.util.spec_from_file_location(
+            f"intelligent_autocompleter.plugins.{mod_name}", path
+        )
         if spec is None or spec.loader is None:
             return None
         mod = importlib.util.module_from_spec(spec)
@@ -67,12 +75,18 @@ class PluginLoader:
             for objname in dir(mod):
                 obj = getattr(mod, objname)
                 try:
-                    if isinstance(obj, type) and issubclass(obj, PluginBase) and obj is not PluginBase:
+                    if (
+                        isinstance(obj, type)
+                        and issubclass(obj, PluginBase)
+                        and obj is not PluginBase
+                    ):
                         cfg = self.cfg_map.get(getattr(obj, "name", objname), None)
                         inst = obj(cfg) if cfg is not None else obj()
                         self.registry.register(inst)
                         if verbose:
-                            print(f"[plugin-loader] instantiated plugin {objname} from {nm}")
+                            print(
+                                f"[plugin-loader] instantiated plugin {objname} from {nm}"
+                            )
                 except Exception:
                     traceback.print_exc()
 
@@ -88,7 +102,11 @@ class PluginLoader:
                         return True
                     for objname in dir(mod):
                         obj = getattr(mod, objname)
-                        if isinstance(obj, type) and issubclass(obj, PluginBase) and obj is not PluginBase:
+                        if (
+                            isinstance(obj, type)
+                            and issubclass(obj, PluginBase)
+                            and obj is not PluginBase
+                        ):
                             cfg = self.cfg_map.get(getattr(obj, "name", objname), None)
                             inst = obj(cfg) if cfg is not None else obj()
                             self.registry.register(inst)
