@@ -145,22 +145,23 @@ class PluginRegistry:
 
     # Loader -------------------------------------------------------------------------------
     def discover_and_load(self, folder: str):
-        """Load all .py files in folder and register PluginBase subclasses."""
+        """
+        Load all .py modules in a folder and register any PluginBase subclasses.
+        """
         if not os.path.isdir(folder):
             return
 
         for fname in os.listdir(folder):
             if not fname.endswith(".py") or fname.startswith("_"):
                 continue
-
             modname = fname[:-3]
             fpath = os.path.join(folder, fname)
-
             try:
                 spec = importlib.util.spec_from_file_location(modname, fpath)
+                if spec is None or spec.loader is None:
+                    continue
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)  # type: ignore
-
                 for attr in dir(mod):
                     obj = getattr(mod, attr)
                     if (
@@ -168,7 +169,8 @@ class PluginRegistry:
                         and issubclass(obj, PluginBase)
                         and obj is not PluginBase
                     ):
-                        self.register(obj())
+                        inst = obj()
+                        self.register(inst)
 
             except Exception as e:
                 tb = traceback.format_exc(limit=1)
